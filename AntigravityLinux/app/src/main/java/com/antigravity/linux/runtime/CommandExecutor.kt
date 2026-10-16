@@ -153,7 +153,9 @@ class CommandExecutor(
         val tmpDir = getProotTmpDir()
         env["PROOT_TMP_DIR"] = tmpDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
-        env["PROOT_NO_SECCOMP"] = "1"
+        // Do not force PROOT_NO_SECCOMP; pure ptrace on AArch64 Android causes signal 11 on execve.
+        // PRoot auto-detects and uses native seccomp filter on Android 10+ safely.
+        env.remove("PROOT_NO_SECCOMP")
         env["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
         env["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
 
@@ -266,8 +268,35 @@ class CommandExecutor(
             stdoutThread.join(1000)
             stderrThread.join(1000)
 
+            val exitVal = process.exitValue()
+            if (exitVal != 0 && shellPath != "/bin/sh") {
+                // Secondary fallback attempt using /bin/sh directly
+                try {
+                    val fallbackList = buildProotCommand(workDir, "/bin/sh", "-c", command)
+                    val fallbackBuilder = ProcessBuilder(fallbackList)
+                    val fallbackEnv = fallbackBuilder.environment()
+                    applyProotEnvironment(fallbackEnv, asUser, envVars)
+                    val fallbackProc = fallbackBuilder.start()
+                    val fStdout = StringBuilder()
+                    val fStderr = StringBuilder()
+                    val t1 = Thread { try { fallbackProc.inputStream.bufferedReader().forEachLine { fStdout.append(it).append("\n"); onLine(it) } } catch (_: Exception) {} }
+                    val t2 = Thread { try { fallbackProc.errorStream.bufferedReader().forEachLine { fStderr.append(it).append("\n"); onLine(it) } } catch (_: Exception) {} }
+                    t1.start(); t2.start()
+                    if (fallbackProc.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                        t1.join(500); t2.join(500)
+                        if (fallbackProc.exitValue() == 0) {
+                            return@withContext ExecutionResult(
+                                exitCode = 0,
+                                stdout = fStdout.toString().trim(),
+                                stderr = fStderr.toString().trim()
+                            )
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
             ExecutionResult(
-                exitCode = process.exitValue(),
+                exitCode = exitVal,
                 stdout = stdout.toString().trim(),
                 stderr = stderr.toString().trim()
             )

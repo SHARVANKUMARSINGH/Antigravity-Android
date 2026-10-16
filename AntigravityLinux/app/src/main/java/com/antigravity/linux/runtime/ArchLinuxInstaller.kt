@@ -185,14 +185,19 @@ class ArchLinuxInstaller(
             // 8. Verify Execution
             notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
             val executor = CommandExecutor(rootfsDir, prootFile, context)
-            val testResult = executor.executeInLinux("uname -m")
+            var testResult = executor.executeInLinux("uname -m")
 
-            if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.isNotBlank())) {
+            if (!testResult.isSuccess || testResult.stdout.isBlank()) {
+                // Fallback attempt: test directly with /bin/sh
+                testResult = executor.executeInLinux("/bin/sh -c 'uname -m'")
+            }
+
+            if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
                 return@withContext true
             } else {
-                val err = testResult.stderr.ifBlank { testResult.stdout }
+                val err = testResult.stderr.ifBlank { testResult.stdout }.ifBlank { "Exit code ${testResult.exitCode}" }
                 notifyError(listener, "Verification", "PRoot test failed: $err")
                 return@withContext false
             }
