@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Terminal window container -->
+    <path
+        android:fillColor="#FF212121"
+        android:pathData="M24,28h60c2.2,0 4,1.8 4,4v44c0,2.2 -1.8,4 -4,4H24c-2.2,0 -4,-1.8 -4,-4V32c0,-2.2 1.8,-4 4,-4z" />
+    <!-- Terminal top bar -->
+    <path
+        android:fillColor="#FF333333"
+        android:pathData="M20,32v6h68v-6c0,-2.2 -1.8,-4 -4,-4H24c-2.2,0 -4,1.8 -4,4z" />
+    <!-- Terminal prompt symbol '>' -->
+    <path
+        android:fillColor="#FF00E676"
+        android:pathData="M32,46l8,8 -8,8 2.8,2.8 10.8,-10.8L34.8,43.2z" />
+    <!-- Terminal cursor '_' -->
+    <path
+        android:fillColor="#FF00E676"
+        android:pathData="M48,62h16v3H48z" />
+</vector>

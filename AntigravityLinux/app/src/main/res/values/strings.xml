@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Antigravity Linux</string>
+    <string name="notification_channel_id">linux_runtime</string>
+    <string name="notification_channel_name">Linux Runtime</string>
+</resources>

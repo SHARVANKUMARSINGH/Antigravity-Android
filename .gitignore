@@ -1,0 +1,24 @@
+# Antigravity Linux Workspace .gitignore
+
+# GitHub Authentication & Config (Protects Personal Access Token)
+.github_config
+*.pat
+
+# Gradle build directories & caches
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+
+# Android Local properties & secrets
+local.properties
+*.key
+*.keystore
+*.jks
+
+# OS & Temporary files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
