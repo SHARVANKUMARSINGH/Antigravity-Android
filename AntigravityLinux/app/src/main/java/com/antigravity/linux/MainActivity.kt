@@ -89,24 +89,37 @@ class MainActivity : ComponentActivity() {
                                     isInstalling = true
                                     installProgress = 0
                                     lifecycleScope.launch {
-                                        val success = runtimeManager.initializeEnvironment(object : InstallProgressListener {
-                                            override fun onProgress(stage: String, percent: Int, detail: String) {
-                                                installProgress = percent
-                                            }
+                                        try {
+                                            val success = runtimeManager.initializeEnvironment(object : InstallProgressListener {
+                                                override fun onProgress(stage: String, percent: Int, detail: String) {
+                                                    runOnUiThread {
+                                                        installProgress = percent
+                                                    }
+                                                }
 
-                                            override fun onError(stage: String, error: String) {
-                                                isInstalling = false
-                                                Toast.makeText(this@MainActivity, "Install Failed: $error", Toast.LENGTH_LONG).show()
-                                            }
+                                                override fun onError(stage: String, error: String) {
+                                                    runOnUiThread {
+                                                        isInstalling = false
+                                                        Toast.makeText(this@MainActivity, "Install Failed: $error", Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
 
-                                            override fun onSuccess(detail: String) {
-                                                isInstalling = false
-                                                installProgress = 100
-                                                Toast.makeText(this@MainActivity, detail, Toast.LENGTH_SHORT).show()
+                                                override fun onSuccess(detail: String) {
+                                                    runOnUiThread {
+                                                        isInstalling = false
+                                                        installProgress = 100
+                                                        Toast.makeText(this@MainActivity, detail, Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            })
+                                            if (success && settings.runInBackground) {
+                                                LinuxForegroundService.startService(this@MainActivity)
                                             }
-                                        })
-                                        if (success && settings.runInBackground) {
-                                            LinuxForegroundService.startService(this@MainActivity)
+                                        } catch (e: Exception) {
+                                            runOnUiThread {
+                                                isInstalling = false
+                                                Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                            }
                                         }
                                     }
                                 },

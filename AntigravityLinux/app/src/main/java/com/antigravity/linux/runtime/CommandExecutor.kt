@@ -31,6 +31,13 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
         val rootfsPath = rootfsDir.absolutePath
 
         val cmdList = mutableListOf<String>()
+        val isScript = prootBin.exists() && try {
+            prootBin.inputStream().use { it.read() == '#'.code && it.read() == '!'.code }
+        } catch (_: Exception) { false }
+
+        if (isScript) {
+            cmdList.add("/system/bin/sh")
+        }
         cmdList.add(prootPath)
         cmdList.add("-r")
         cmdList.add(rootfsPath)
@@ -163,7 +170,15 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
         val prootPath = prootBin.absolutePath
         val rootfsPath = rootfsDir.absolutePath
 
-        val cmdList = listOf(
+        val isScript = prootBin.exists() && try {
+            prootBin.inputStream().use { it.read() == '#'.code && it.read() == '!'.code }
+        } catch (_: Exception) { false }
+
+        val cmdList = mutableListOf<String>()
+        if (isScript) {
+            cmdList.add("/system/bin/sh")
+        }
+        cmdList.addAll(listOf(
             prootPath,
             "-r", rootfsPath,
             "-0",
@@ -172,7 +187,7 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
             "-b", "/sys",
             "-w", workDir,
             "/bin/bash", "-l"
-        )
+        ))
 
         val processBuilder = ProcessBuilder(cmdList)
         val env = processBuilder.environment()
