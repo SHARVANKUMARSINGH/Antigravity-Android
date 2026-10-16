@@ -7,6 +7,8 @@ on:
     branches: [ "main" ]
   workflow_dispatch: # Allows manual trigger from GitHub Actions web/mobile UI
 
+permissions: write-all
+
 jobs:
   build:
     name: Build Android APK on Cloud
