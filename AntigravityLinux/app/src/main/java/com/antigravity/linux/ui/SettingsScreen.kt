@@ -17,6 +17,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import com.antigravity.linux.data.StorageMetrics
 import com.antigravity.linux.data.SystemDiagnostics
 import com.antigravity.linux.data.UserSettings
@@ -27,6 +30,10 @@ fun SettingsScreen(
     diagnostics: SystemDiagnostics,
     storageMetrics: StorageMetrics,
     settings: UserSettings,
+    vncLogs: String,
+    onRefreshVncLogs: () -> Unit,
+    onClearVncLogs: () -> Unit,
+    onRestartVnc: () -> Unit,
     onUpdateAutoSyncClipboard: (Boolean) -> Unit,
     onUpdateRunInBackground: (Boolean) -> Unit,
     onUpdateResolution: (Int, Int) -> Unit,
@@ -34,6 +41,14 @@ fun SettingsScreen(
     onBackToDashboard: () -> Unit
 ) {
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var autoStreamLogs by remember { mutableStateOf(true) }
+
+    LaunchedEffect(autoStreamLogs) {
+        while (autoStreamLogs) {
+            onRefreshVncLogs()
+            kotlinx.coroutines.delay(2000)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -178,6 +193,122 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("1920x1080 (1080p)", fontSize = 12.sp, color = TextPrimary)
+                    }
+                }
+            }
+        }
+
+        // Section: VNC Server Live Logs
+        Card(
+            modifier = Modifier.fillMaxWidth().border(1.dp, SurfaceBorder, RoundedCornerShape(12.dp)),
+            colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "VNC Server Live Logs",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (diagnostics.vncPortOpen) StatusGreen else StatusRed)
+                            )
+                            Text(
+                                if (diagnostics.vncPortOpen) "Port 5901: Listening (Active)" else "Port 5901: Inactive",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (diagnostics.vncPortOpen) StatusGreen else StatusRed
+                            )
+                        }
+                    }
+
+                    // Auto-stream toggle
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Live Stream", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Switch(
+                            checked = autoStreamLogs,
+                            onCheckedChange = { autoStreamLogs = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Violet40),
+                            modifier = Modifier.scale(0.8f)
+                        )
+                    }
+                }
+
+                // Log viewer container
+                val logScrollState = rememberScrollState()
+                LaunchedEffect(vncLogs) {
+                    logScrollState.animateScrollTo(logScrollState.maxValue)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 220.dp)
+                        .background(Color(0xFF0D1117), RoundedCornerShape(8.dp))
+                        .border(1.dp, SurfaceBorder, RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                ) {
+                    Text(
+                        text = vncLogs.ifBlank { "No VNC server logs captured yet. Tap 'Start Linux Desktop' on Dashboard to initialize." },
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        ),
+                        color = Color(0xFFC9D1D9),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(logScrollState)
+                    )
+                }
+
+                // Actions: Refresh, Clear, Restart VNC
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onRefreshVncLogs,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextPrimary)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Refresh", fontSize = 12.sp, color = TextPrimary)
+                    }
+
+                    OutlinedButton(
+                        onClick = onClearVncLogs,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.ClearAll, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Clear", fontSize = 12.sp, color = TextSecondary)
+                    }
+
+                    Button(
+                        onClick = onRestartVnc,
+                        colors = ButtonDefaults.buttonColors(containerColor = Violet40),
+                        modifier = Modifier.weight(1.2f),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Restart VNC", fontSize = 12.sp, color = Color.White)
                     }
                 }
             }

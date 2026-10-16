@@ -23,7 +23,7 @@ class LinuxRuntimeManager(private val context: Context) {
     val binDir: File = File(context.filesDir, "bin")
     val prootBin: File = File(binDir, "proot")
 
-    val commandExecutor = CommandExecutor(rootfsDir, prootBin)
+    val commandExecutor = CommandExecutor(rootfsDir, prootBin, context)
     val installer = ArchLinuxInstaller(context, rootfsDir, binDir)
 
     private val _runtimeState = MutableStateFlow(RuntimeState.NOT_INSTALLED)
@@ -44,6 +44,12 @@ class LinuxRuntimeManager(private val context: Context) {
     private val _diagnostics = MutableStateFlow(SystemDiagnostics())
     val diagnostics: StateFlow<SystemDiagnostics> = _diagnostics.asStateFlow()
 
+    private val _vncLogs = MutableStateFlow("")
+    val vncLogs: StateFlow<String> = _vncLogs.asStateFlow()
+
+    private val _installedMode = MutableStateFlow("None")
+    val installedMode: StateFlow<String> = _installedMode.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.Default)
 
     init {
@@ -52,9 +58,40 @@ class LinuxRuntimeManager(private val context: Context) {
         }
     }
 
+    fun readVncLogs(): String {
+        val candidates = listOf(
+            File(rootfsDir, "tmp/vncserver.log"),
+            File(rootfsDir, "home/antigravity/.vnc/desktop.log")
+        )
+        for (f in candidates) {
+            if (f.exists() && f.length() > 0) {
+                try {
+                    val lines = f.readLines()
+                    val text = lines.takeLast(120).joinToString("\n")
+                    _vncLogs.value = text
+                    return text
+                } catch (_: Exception) {}
+            }
+        }
+        return _vncLogs.value.ifBlank { "VNC server has not generated log output yet." }
+    }
+
+    fun clearVncLogs() {
+        try {
+            File(rootfsDir, "tmp/vncserver.log").writeText("")
+            File(rootfsDir, "home/antigravity/.vnc/desktop.log").writeText("")
+        } catch (_: Exception) {}
+        _vncLogs.value = ""
+    }
+
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
-        val rootfsExists = rootfsDir.exists() && File(rootfsDir, "bin/bash").exists()
+        val rootfsExists = rootfsDir.exists() && (File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "usr/bin/bash").exists())
         val cpuInfo = ArchitectureDetector.detect()
+
+        // Read installed Antigravity mode if present
+        val modeFile = File(rootfsDir, "opt/antigravity/.installed_mode")
+        val currentMode = if (modeFile.exists()) modeFile.readText().trim() else "None"
+        _installedMode.value = currentMode
 
         if (!rootfsExists) {
             _runtimeState.value = RuntimeState.NOT_INSTALLED
@@ -80,6 +117,7 @@ class LinuxRuntimeManager(private val context: Context) {
             }
         }
 
+        readVncLogs()
         updateStorageMetrics()
         updateDiagnostics(cpuInfo, rootfsExists)
     }
@@ -111,9 +149,62 @@ class LinuxRuntimeManager(private val context: Context) {
         return success
     }
 
+    suspend fun installAntigravity(mode: com.antigravity.linux.data.AntigravityMode, listener: InstallProgressListener): Boolean = withContext(Dispatchers.IO) {
+        if (_runtimeState.value == RuntimeState.NOT_INSTALLED) {
+            withContext(Dispatchers.Main) {
+                listener.onError("Prerequisites", "Linux rootfs is not installed. Tap '1. Initialize Ultra-Light Linux' first.")
+            }
+            return@withContext false
+        }
+
+        _antigravityState.value = AntigravityState.STARTING
+        _statusMessage.value = "Starting setup of ${mode.label}..."
+        withContext(Dispatchers.Main) {
+            listener.onProgress("Setup", 10, "Preparing package manager for ${mode.label}...")
+        }
+
+        val script = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) "/usr/local/bin/setup-antigravity-ide" else "/usr/local/bin/setup-antigravity-app"
+
+        var stepPercent = 15
+        val result = commandExecutor.executeInLinuxStream(
+            command = script,
+            workDir = "/root",
+            asUser = "root",
+            timeoutSeconds = 600,
+            onLine = { line ->
+                val clean = line.trim()
+                if (clean.isNotBlank()) {
+                    stepPercent = (stepPercent + 1).coerceAtMost(92)
+                    scope.launch(Dispatchers.Main) {
+                        _statusMessage.value = clean
+                        listener.onProgress("Setup", stepPercent, clean)
+                    }
+                }
+            }
+        )
+
+        refreshStatus()
+
+        if (result.isSuccess) {
+            _antigravityState.value = AntigravityState.NOT_RUNNING
+            withContext(Dispatchers.Main) {
+                listener.onProgress("Complete", 100, "${mode.label} installed successfully!")
+                listener.onSuccess("${mode.label} installed successfully! Ready to launch.")
+            }
+            true
+        } else {
+            _antigravityState.value = AntigravityState.ERROR
+            val err = result.stderr.ifBlank { result.stdout }
+            withContext(Dispatchers.Main) {
+                listener.onError("Setup", "Installation failed: $err")
+            }
+            false
+        }
+    }
+
     suspend fun startDesktop(): Boolean = withContext(Dispatchers.IO) {
         if (_runtimeState.value == RuntimeState.NOT_INSTALLED) {
-            _statusMessage.value = "Cannot start desktop: Arch Linux is not installed."
+            _statusMessage.value = "Cannot start desktop: Linux is not installed."
             return@withContext false
         }
 
@@ -130,13 +221,20 @@ class LinuxRuntimeManager(private val context: Context) {
                 _desktopState.value = DesktopState.RUNNING
                 _runtimeState.value = RuntimeState.RUNNING
                 _statusMessage.value = "Desktop session active on localhost:5901 (:1)"
+                readVncLogs()
                 return@withContext true
             }
             attempts++
         }
 
+        readVncLogs()
+        val currentLogs = _vncLogs.value
         _desktopState.value = DesktopState.ERROR
-        _statusMessage.value = "Desktop failed to start. Log: ${result.stderr.ifBlank { result.stdout }}"
+        if (currentLogs.contains("not found", ignoreCase = true) || currentLogs.contains("Install Antigravity", ignoreCase = true)) {
+            _statusMessage.value = "Desktop not installed. Tap 'Install Antigravity' to choose Desktop App or IDE."
+        } else {
+            _statusMessage.value = "Desktop failed to start. Log: ${result.stderr.ifBlank { result.stdout }}"
+        }
         return@withContext false
     }
 
@@ -291,12 +389,14 @@ class LinuxRuntimeManager(private val context: Context) {
             isArm64 = cpuInfo.isArm64,
             kernelRelease = cpuInfo.kernelVersion,
             androidApiLevel = android.os.Build.VERSION.SDK_INT,
-            prootAvailable = prootBin.exists(),
+            prootAvailable = commandExecutor.getEffectiveProot().exists(),
             rootfsExists = rootfsExists,
             rootfsPath = rootfsDir.absolutePath,
             glibcVersion = glibc,
             desktopInstalled = File(rootfsDir, "usr/bin/xfce4-session").exists() || File(rootfsDir, "usr/bin/openbox").exists(),
             displayPort = 5901,
+            vncPortOpen = isPortOpen("127.0.0.1", 5901),
+            installedMode = _installedMode.value,
             antigravityBinaryExists = antigravityFile.exists(),
             antigravityArm64Verified = isArm64Bin,
             antigravityProcessRunning = _antigravityState.value == AntigravityState.RUNNING,
@@ -306,11 +406,11 @@ class LinuxRuntimeManager(private val context: Context) {
             } else if (!rootfsExists) {
                 "Rootfs not installed. Run initialization."
             } else if (!antigravityFile.exists()) {
-                "Arch Linux ARM64 ready. Antigravity Desktop not yet installed."
+                "Linux ARM64 ready. Antigravity Desktop not yet installed."
             } else if (!isArm64Bin) {
                 "Antigravity binary architecture mismatch: not ARM64."
             } else {
-                "Fully compatible: ARM64 userspace, glibc, and Antigravity binary verified."
+                "Fully compatible: ARM64 userspace, glibc, and Antigravity binary verified (${_installedMode.value})."
             }
         )
     }

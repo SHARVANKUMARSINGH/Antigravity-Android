@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
                 val storageMetrics by runtimeManager.storageMetrics.collectAsState()
                 val diagnostics by runtimeManager.diagnostics.collectAsState()
                 val statusMessage by runtimeManager.statusMessage.collectAsState()
+                val vncLogs by runtimeManager.vncLogs.collectAsState()
                 val settings by preferencesRepo.settingsFlow.collectAsState(initial = UserSettings())
 
                 var isInstalling by remember { mutableStateOf(false) }
@@ -101,6 +102,44 @@ class MainActivity : ComponentActivity() {
                                                     runOnUiThread {
                                                         isInstalling = false
                                                         Toast.makeText(this@MainActivity, "Install Failed: $error", Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
+
+                                                override fun onSuccess(detail: String) {
+                                                    runOnUiThread {
+                                                        isInstalling = false
+                                                        installProgress = 100
+                                                        Toast.makeText(this@MainActivity, detail, Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            })
+                                            if (success && settings.runInBackground) {
+                                                LinuxForegroundService.startService(this@MainActivity)
+                                            }
+                                        } catch (e: Exception) {
+                                            runOnUiThread {
+                                                isInstalling = false
+                                                Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                onInstallAntigravity = { mode ->
+                                    isInstalling = true
+                                    installProgress = 0
+                                    lifecycleScope.launch {
+                                        try {
+                                            val success = runtimeManager.installAntigravity(mode, object : InstallProgressListener {
+                                                override fun onProgress(stage: String, percent: Int, detail: String) {
+                                                    runOnUiThread {
+                                                        installProgress = percent
+                                                    }
+                                                }
+
+                                                override fun onError(stage: String, error: String) {
+                                                    runOnUiThread {
+                                                        isInstalling = false
+                                                        Toast.makeText(this@MainActivity, "Install Error: $error", Toast.LENGTH_LONG).show()
                                                     }
                                                 }
 
@@ -205,6 +244,24 @@ class MainActivity : ComponentActivity() {
                                 diagnostics = diagnostics,
                                 storageMetrics = storageMetrics,
                                 settings = settings,
+                                vncLogs = vncLogs,
+                                onRefreshVncLogs = {
+                                    runtimeManager.readVncLogs()
+                                },
+                                onClearVncLogs = {
+                                    runtimeManager.clearVncLogs()
+                                },
+                                onRestartVnc = {
+                                    lifecycleScope.launch {
+                                        runtimeManager.stopDesktop()
+                                        val started = runtimeManager.startDesktop()
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            if (started) "VNC Server active on :1" else "Failed to start VNC",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
                                 onUpdateAutoSyncClipboard = { enabled ->
                                     lifecycleScope.launch {
                                         preferencesRepo.updateAutoSyncClipboard(enabled)

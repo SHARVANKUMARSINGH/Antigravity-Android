@@ -65,6 +65,14 @@ data class StorageMetrics(
 }
 
 /**
+ * Installation mode for Antigravity environment.
+ */
+enum class AntigravityMode(val id: String, val label: String, val description: String) {
+    APP("app", "Antigravity Desktop App", "Ultra-light X11 desktop (Openbox + X11VNC) with Antigravity Desktop GUI and CLI tools"),
+    IDE("ide", "Antigravity Desktop IDE", "Developer Cloud/Desktop IDE (VS Code & Code-Server) with terminal, git, python & node")
+}
+
+/**
  * Diagnostics information for system architecture, runtime, and Antigravity compatibility.
  */
 data class SystemDiagnostics(
@@ -78,6 +86,8 @@ data class SystemDiagnostics(
     val glibcVersion: String = "Unknown",
     val desktopInstalled: Boolean = false,
     val displayPort: Int = 5901,
+    val vncPortOpen: Boolean = false,
+    val installedMode: String = "None",
     val antigravityBinaryExists: Boolean = false,
     val antigravityArm64Verified: Boolean = false,
     val antigravityProcessRunning: Boolean = false,

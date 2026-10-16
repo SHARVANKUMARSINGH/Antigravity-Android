@@ -38,6 +38,7 @@ fun DashboardScreen(
     installProgress: Int,
     isInstalling: Boolean,
     onInitializeArchLinux: () -> Unit,
+    onInstallAntigravity: (AntigravityMode) -> Unit,
     onStartDesktop: () -> Unit,
     onLaunchAntigravity: () -> Unit,
     onOpenTerminal: () -> Unit,
@@ -47,6 +48,17 @@ fun DashboardScreen(
     onStopLinux: () -> Unit
 ) {
     val scrollState = rememberScrollState()
+    var showInstallModeDialog by remember { mutableStateOf(false) }
+
+    if (showInstallModeDialog) {
+        InstallAntigravityDialog(
+            currentMode = diagnostics.installedMode,
+            onDismiss = { showInstallModeDialog = false },
+            onSelectMode = { mode ->
+                onInstallAntigravity(mode)
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -83,8 +95,10 @@ fun DashboardScreen(
             runtimeState = runtimeState,
             desktopState = desktopState,
             antigravityState = antigravityState,
+            diagnostics = diagnostics,
             isInstalling = isInstalling,
             onInitializeArchLinux = onInitializeArchLinux,
+            onOpenInstallDialog = { showInstallModeDialog = true },
             onStartDesktop = onStartDesktop,
             onLaunchAntigravity = onLaunchAntigravity,
             onOpenTerminal = onOpenTerminal,
@@ -268,8 +282,10 @@ private fun ControlActionsCard(
     runtimeState: RuntimeState,
     desktopState: DesktopState,
     antigravityState: AntigravityState,
+    diagnostics: SystemDiagnostics,
     isInstalling: Boolean,
     onInitializeArchLinux: () -> Unit,
+    onOpenInstallDialog: () -> Unit,
     onStartDesktop: () -> Unit,
     onLaunchAntigravity: () -> Unit,
     onOpenTerminal: () -> Unit,
@@ -296,7 +312,7 @@ private fun ControlActionsCard(
             // 1. Initialize Ultra-Light Linux
             ActionButton(
                 title = "1. Initialize Ultra-Light Linux",
-                subtitle = "Fast 27 MB download • Pure ARM64 runtime for Antigravity",
+                subtitle = "Baked-in 27 MB rootfs • Instant offline ARM64 install",
                 icon = Icons.Default.CloudDownload,
                 containerColor = SurfaceCardElevated,
                 contentColor = Violet40,
@@ -315,16 +331,47 @@ private fun ControlActionsCard(
                 onClick = onStartDesktop
             )
 
-            // 3. Launch Antigravity
-            ActionButton(
-                title = "3. Launch Antigravity",
-                subtitle = "Start Google Antigravity Desktop on DISPLAY=:1",
-                icon = Icons.Default.RocketLaunch,
-                containerColor = SurfaceCardElevated,
-                contentColor = Violet40,
-                enabled = !isInstalling && runtimeState != RuntimeState.NOT_INSTALLED && antigravityState != AntigravityState.RUNNING,
-                onClick = onLaunchAntigravity
-            )
+            // 3. Antigravity Desktop / IDE
+            val isAntigravityInstalled = antigravityState != AntigravityState.NOT_INSTALLED
+            if (!isAntigravityInstalled) {
+                ActionButton(
+                    title = "3. Install Antigravity",
+                    subtitle = "Tap to choose Desktop App (GUI) or Desktop IDE (VS Code)",
+                    icon = Icons.Default.Download,
+                    containerColor = SurfaceCardElevated,
+                    contentColor = Violet40,
+                    enabled = !isInstalling && runtimeState != RuntimeState.NOT_INSTALLED,
+                    onClick = onOpenInstallDialog
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        ActionButton(
+                            title = if (diagnostics.installedMode == "Desktop IDE") "3. Launch Antigravity IDE" else "3. Launch Antigravity Desktop",
+                            subtitle = "Run ${diagnostics.installedMode} on DISPLAY=:1",
+                            icon = Icons.Default.RocketLaunch,
+                            containerColor = SurfaceCardElevated,
+                            contentColor = Violet40,
+                            enabled = !isInstalling && antigravityState != AntigravityState.RUNNING,
+                            onClick = onLaunchAntigravity
+                        )
+                    }
+                    IconButton(
+                        onClick = onOpenInstallDialog,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(SurfaceCardElevated)
+                            .border(1.dp, SurfaceBorder, RoundedCornerShape(8.dp))
+                    ) {
+                        Icon(Icons.Default.SwapHoriz, contentDescription = "Switch Mode", tint = Violet40)
+                    }
+                }
+            }
 
             // 4. Open Terminal
             ActionButton(
@@ -535,4 +582,112 @@ private fun QuickDiagnosticsCard(diagnostics: SystemDiagnostics) {
             }
         }
     }
+}
+
+@Composable
+fun InstallAntigravityDialog(
+    currentMode: String,
+    onDismiss: () -> Unit,
+    onSelectMode: (AntigravityMode) -> Unit
+) {
+    var selectedMode by remember { mutableStateOf(if (currentMode == "Desktop IDE") AntigravityMode.IDE else AntigravityMode.APP) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Choose Antigravity Mode",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Select which Antigravity environment to install in your Linux userspace:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+
+                // Option 1: Desktop App
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { selectedMode = AntigravityMode.APP }
+                        .border(
+                            1.dp,
+                            if (selectedMode == AntigravityMode.APP) Violet40 else SurfaceBorder,
+                            RoundedCornerShape(8.dp)
+                        ),
+                    color = if (selectedMode == AntigravityMode.APP) Violet40.copy(alpha = 0.15f) else SurfaceCardElevated
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        RadioButton(
+                            selected = selectedMode == AntigravityMode.APP,
+                            onClick = { selectedMode = AntigravityMode.APP },
+                            colors = RadioButtonDefaults.colors(selectedColor = Violet40)
+                        )
+                        Column {
+                            Text("Antigravity Desktop App", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                            Text("Ultra-light X11 desktop (Openbox + X11VNC) with Antigravity Desktop GUI and CLI tools.", color = TextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                // Option 2: Desktop IDE
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { selectedMode = AntigravityMode.IDE }
+                        .border(
+                            1.dp,
+                            if (selectedMode == AntigravityMode.IDE) Violet40 else SurfaceBorder,
+                            RoundedCornerShape(8.dp)
+                        ),
+                    color = if (selectedMode == AntigravityMode.IDE) Violet40.copy(alpha = 0.15f) else SurfaceCardElevated
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        RadioButton(
+                            selected = selectedMode == AntigravityMode.IDE,
+                            onClick = { selectedMode = AntigravityMode.IDE },
+                            colors = RadioButtonDefaults.colors(selectedColor = Violet40)
+                        )
+                        Column {
+                            Text("Antigravity Desktop IDE", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
+                            Text("Full developer IDE (VS Code & Code-Server), git, python, build tools & interactive shell.", color = TextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSelectMode(selectedMode)
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Violet40)
+            ) {
+                Text("Install Selected", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel", color = TextPrimary)
+            }
+        },
+        containerColor = SurfaceCard,
+        shape = RoundedCornerShape(12.dp)
+    )
 }

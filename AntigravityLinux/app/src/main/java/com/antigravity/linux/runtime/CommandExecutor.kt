@@ -15,10 +15,41 @@ data class ExecutionResult(
     val isSuccess: Boolean get() = exitCode == 0
 }
 
-class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
+class CommandExecutor(
+    private val rootfsDir: File,
+    private val prootBin: File,
+    private val context: android.content.Context? = null
+) {
 
     /**
-     * Executes a command inside the Arch Linux rootfs using PRoot.
+     * Resolves the executable PRoot binary.
+     * Prefers nativeLibraryDir/libproot.so (unrestricted execution permissions on Android 10+),
+     * then filesDir/bin/proot or prootBin.
+     */
+    fun getEffectiveProot(): File {
+        if (context != null) {
+            val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
+            if (nativeLib.exists() && nativeLib.length() > 0) {
+                try { nativeLib.setExecutable(true, false) } catch (_: Exception) {}
+                return nativeLib
+            }
+        }
+        if (prootBin.exists() && prootBin.length() > 0) {
+            try { prootBin.setExecutable(true, false) } catch (_: Exception) {}
+            return prootBin
+        }
+        if (context != null) {
+            val binProot = File(context.filesDir, "bin/proot")
+            if (binProot.exists() && binProot.length() > 0) {
+                try { binProot.setExecutable(true, false) } catch (_: Exception) {}
+                return binProot
+            }
+        }
+        return prootBin
+    }
+
+    /**
+     * Executes a command inside the Linux rootfs using PRoot.
      */
     suspend fun executeInLinux(
         command: String,
@@ -26,22 +57,48 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
         asUser: String = "root",
         timeoutSeconds: Long = 60,
         envVars: Map<String, String> = emptyMap()
+    ): ExecutionResult = executeInLinuxStream(
+        command = command,
+        workDir = workDir,
+        asUser = asUser,
+        timeoutSeconds = timeoutSeconds,
+        envVars = envVars,
+        onLine = {}
+    )
+
+    /**
+     * Executes a command inside the Linux rootfs using PRoot with real-time output callback.
+     */
+    suspend fun executeInLinuxStream(
+        command: String,
+        workDir: String = "/root",
+        asUser: String = "root",
+        timeoutSeconds: Long = 60,
+        envVars: Map<String, String> = emptyMap(),
+        onLine: (String) -> Unit = {}
     ): ExecutionResult = withContext(Dispatchers.IO) {
-        val prootPath = prootBin.absolutePath
+        val effectiveProot = getEffectiveProot()
+        if (!effectiveProot.exists() || effectiveProot.length() == 0L) {
+            return@withContext ExecutionResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "PRoot engine binary not found. Please initialize the environment."
+            )
+        }
+
+        try {
+            effectiveProot.setExecutable(true, false)
+        } catch (_: Exception) {}
+
+        val prootPath = effectiveProot.absolutePath
         val rootfsPath = rootfsDir.absolutePath
 
         val cmdList = mutableListOf<String>()
-        val isScript = prootBin.exists() && try {
-            prootBin.inputStream().use { it.read() == '#'.code && it.read() == '!'.code }
-        } catch (_: Exception) { false }
-
-        if (isScript) {
-            cmdList.add("/system/bin/sh")
-        }
         cmdList.add(prootPath)
+        cmdList.add("--link2symlink")
+        cmdList.add("-0")
         cmdList.add("-r")
         cmdList.add(rootfsPath)
-        cmdList.add("-0")
         cmdList.add("-b")
         cmdList.add("/dev")
         cmdList.add("-b")
@@ -51,7 +108,8 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
         cmdList.add("-w")
         cmdList.add(workDir)
 
-        cmdList.add("/bin/bash")
+        val hasBash = File(rootfsDir, "usr/bin/bash").exists() || File(rootfsDir, "bin/bash").exists()
+        cmdList.add(if (hasBash) "/bin/bash" else "/bin/sh")
         cmdList.add("-c")
         cmdList.add(command)
 
@@ -78,6 +136,7 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
                     var line: String?
                     while (stdoutReader.readLine().also { line = it } != null) {
                         stdout.append(line).append("\n")
+                        line?.let { onLine(it) }
                     }
                 } catch (_: Exception) {}
             }
@@ -86,6 +145,7 @@ class CommandExecutor(private val rootfsDir: File, private val prootBin: File) {
                     var line: String?
                     while (stderrReader.readLine().also { line = it } != null) {
                         stderr.append(line).append("\n")
+                        line?.let { onLine(it) }
                     }
                 } catch (_: Exception) {}
             }

@@ -115,16 +115,55 @@ class ArchLinuxInstaller(
             val prootFile = File(binDir, "proot")
             setupProotBinary(prootFile)
 
-            // 5. Download or verify existing rootfs
+            // 5. Unpack baked-in rootfs or download from mirrors
             val archiveFile = File(context.cacheDir, "linux-arm64-rootfs.tar.gz")
             val isExistingValid = verifyExistingRootfs()
 
             if (!isExistingValid) {
-                notifyProgress(listener, "Download", 25, "Fetching Ultra-Light Linux ARM64 (27 MB)...")
-                val downloadSuccess = downloadRootfs(archiveFile, listener)
-                if (!downloadSuccess) {
-                    notifyError(listener, "Download", "Failed to download Linux rootfs from all mirrors.")
-                    return@withContext false
+                var hasAssetRootfs = false
+                try {
+                    context.assets.open("rootfs.tar.gz").use { stream ->
+                        hasAssetRootfs = stream.available() > 0 || true
+                    }
+                } catch (_: Exception) {
+                    hasAssetRootfs = false
+                }
+
+                if (hasAssetRootfs) {
+                    notifyProgress(listener, "Unpack", 25, "Unpacking baked-in Linux ARM64 (27 MB)...")
+                    if (archiveFile.exists()) archiveFile.delete()
+                    try {
+                        context.assets.open("rootfs.tar.gz").buffered().use { input ->
+                            FileOutputStream(archiveFile).buffered().use { output ->
+                                val buffer = ByteArray(65536)
+                                var bytesRead: Int
+                                var copiedBytes = 0L
+                                val estimatedTotal = 27660560L
+                                var lastPercent = 25
+
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    output.write(buffer, 0, bytesRead)
+                                    copiedBytes += bytesRead
+                                    val percent = (25 + ((copiedBytes * 25) / estimatedTotal)).toInt().coerceIn(25, 50)
+                                    if (percent > lastPercent) {
+                                        lastPercent = percent
+                                        notifyProgress(listener, "Unpack", percent, "Unpacking: ${copiedBytes / (1024 * 1024)} MB / 27 MB")
+                                    }
+                                }
+                                output.flush()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        notifyError(listener, "Unpack", "Failed to unpack baked-in rootfs: ${e.message}")
+                        return@withContext false
+                    }
+                } else {
+                    notifyProgress(listener, "Download", 25, "Fetching Ultra-Light Linux ARM64 (27 MB)...")
+                    val downloadSuccess = downloadRootfs(archiveFile, listener)
+                    if (!downloadSuccess) {
+                        notifyError(listener, "Download", "Failed to download Linux rootfs from all mirrors.")
+                        return@withContext false
+                    }
                 }
 
                 // 6. Extraction with live progress
@@ -145,7 +184,7 @@ class ArchLinuxInstaller(
 
             // 8. Verify Execution
             notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
-            val executor = CommandExecutor(rootfsDir, prootFile)
+            val executor = CommandExecutor(rootfsDir, prootFile, context)
             val testResult = executor.executeInLinux("uname -m")
 
             if (testResult.isSuccess && testResult.stdout.contains("aarch64")) {
@@ -166,30 +205,38 @@ class ArchLinuxInstaller(
 
     private fun verifyExistingRootfs(): Boolean {
         val etcDir = File(rootfsDir, "etc")
-        val hasShell = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "bin/sh").exists()
+        val hasShell = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "bin/sh").exists() || File(rootfsDir, "usr/bin/bash").exists()
         val hasLib = File(rootfsDir, "usr/lib").exists() || File(rootfsDir, "lib").exists() || File(rootfsDir, "usr/bin").exists()
         return etcDir.exists() && hasShell && hasLib
     }
 
     private fun setupProotBinary(prootFile: File) {
-        if (!prootFile.exists() || prootFile.length() == 0L) {
-            val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
-            val bundledProot = File(nativeLibDir, "libproot.so")
+        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
+        val bundledProot = File(nativeLibDir, "libproot.so")
 
-            if (bundledProot.exists()) {
+        if (bundledProot.exists() && bundledProot.length() > 0) {
+            try {
                 bundledProot.copyTo(prootFile, overwrite = true)
-            } else {
-                prootFile.writeText(
-                    """
-                    #!/system/bin/sh
-                    # PRoot execution wrapper for Android ARM64
-                    exec /system/bin/sh -c "$@"
-                    """.trimIndent()
-                )
-            }
+                prootFile.setExecutable(true, false)
+            } catch (_: Exception) {}
         }
-        prootFile.setExecutable(true, false)
-        prootFile.setReadable(true, false)
+
+        if (!prootFile.exists() || prootFile.length() == 0L) {
+            try {
+                context.assets.open("bin/proot").use { assetIn ->
+                    prootFile.parentFile?.mkdirs()
+                    FileOutputStream(prootFile).use { assetOut ->
+                        assetIn.copyTo(assetOut)
+                    }
+                    prootFile.setExecutable(true, false)
+                }
+            } catch (_: Exception) {}
+        }
+
+        try {
+            prootFile.setExecutable(true, false)
+            prootFile.setReadable(true, false)
+        } catch (_: Exception) {}
     }
 
     private suspend fun downloadRootfs(targetFile: File, listener: InstallProgressListener): Boolean {
@@ -336,14 +383,15 @@ class ArchLinuxInstaller(
 
     private fun configureRootfs() {
         // Pre-create all critical directory trees
-        File(rootfsDir, "etc").mkdirs()
+        File(rootfsDir, "etc/sudoers.d").mkdirs()
         File(rootfsDir, "run/systemd/resolve").mkdirs()
         File(rootfsDir, "tmp").mkdirs()
         File(rootfsDir, "dev").mkdirs()
         File(rootfsDir, "proc").mkdirs()
         File(rootfsDir, "sys").mkdirs()
-        File(rootfsDir, "home/antigravity").mkdirs()
+        File(rootfsDir, "home/antigravity/.vnc").mkdirs()
         File(rootfsDir, "usr/local/bin").mkdirs()
+        File(rootfsDir, "opt/antigravity").mkdirs()
 
         // Configure DNS resolver (safely handles any broken symlink)
         val resolvConf = File(rootfsDir, "etc/resolv.conf")
@@ -357,12 +405,47 @@ class ArchLinuxInstaller(
         val hosts = File(rootfsDir, "etc/hosts")
         safeWriteText(hosts, "127.0.0.1 localhost\n::1 localhost\n")
 
-        // Create start-desktop script
+        // Ensure antigravity user and group exist
+        val passwdFile = File(rootfsDir, "etc/passwd")
+        val currentPasswd = if (passwdFile.exists()) passwdFile.readText() else ""
+        if (!currentPasswd.contains("antigravity:")) {
+            safeWriteText(passwdFile, currentPasswd.trimEnd() + "\nantigravity:x:1000:1000:Antigravity User:/home/antigravity:/bin/bash\n")
+        }
+
+        val groupFile = File(rootfsDir, "etc/group")
+        val currentGroup = if (groupFile.exists()) groupFile.readText() else ""
+        if (!currentGroup.contains("antigravity:")) {
+            safeWriteText(groupFile, currentGroup.trimEnd() + "\nantigravity:x:1000:\n")
+        }
+
+        val shadowFile = File(rootfsDir, "etc/shadow")
+        val currentShadow = if (shadowFile.exists()) shadowFile.readText() else ""
+        if (!currentShadow.contains("antigravity:")) {
+            safeWriteText(shadowFile, currentShadow.trimEnd() + "\nantigravity:*:19000:0:99999:7:::\n")
+        }
+
+        // Configure passwordless sudo for antigravity user
+        val sudoersFile = File(rootfsDir, "etc/sudoers.d/antigravity")
+        safeWriteText(sudoersFile, "antigravity ALL=(ALL:ALL) NOPASSWD: ALL\n")
+
+        // Initialize VNC log files
+        val vncTmpLog = File(rootfsDir, "tmp/vncserver.log")
+        safeWriteText(vncTmpLog, "[System] VNC server logger initialized.\n")
+        val vncHomeLog = File(rootfsDir, "home/antigravity/.vnc/desktop.log")
+        safeWriteText(vncHomeLog, "[System] VNC desktop session logger initialized.\n")
+
+        // Create start-desktop script with live logging
         val startDesktop = File(rootfsDir, "usr/local/bin/start-desktop")
         safeWriteText(
             startDesktop,
             """
             #!/bin/bash
+            LOG_FILE="/tmp/vncserver.log"
+            USER_LOG="/home/antigravity/.vnc/desktop.log"
+            mkdir -p /home/antigravity/.vnc /tmp
+            exec > >(tee -a "${'$'}LOG_FILE" "${'$'}USER_LOG") 2>&1
+            
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Antigravity Linux X11/VNC Server on DISPLAY=:1..."
             export DISPLAY=:1
             export USER=antigravity
             export HOME=/home/antigravity
@@ -370,26 +453,41 @@ class ArchLinuxInstaller(
             # Remove stale X11/VNC locks
             rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null
             
+            VNC_LAUNCHED=0
             # Start TigerVNC / Xvfb on display :1 (port 5901)
             if command -v vncserver >/dev/null 2>&1; then
+                echo "[*] Starting TigerVNC server on :1..."
                 vncserver :1 -geometry 1280x720 -depth 24 -localhost no -SecurityTypes None &
+                VNC_LAUNCHED=1
             elif command -v Xtigervnc >/dev/null 2>&1; then
+                echo "[*] Starting Xtigervnc on :1..."
                 Xtigervnc :1 -geometry 1280x720 -depth 24 -rfbport 5901 -SecurityTypes None &
+                VNC_LAUNCHED=1
             elif command -v Xvfb >/dev/null 2>&1 && command -v x11vnc >/dev/null 2>&1; then
+                echo "[*] Starting Xvfb display server on :1..."
                 Xvfb :1 -screen 0 1280x720x24 &
                 sleep 1
+                echo "[*] Starting x11vnc RFB bridge on port 5901..."
                 x11vnc -display :1 -rfbport 5901 -nopw -forever -bg
+                VNC_LAUNCHED=1
+            else
+                echo "[!] VNC server packages (x11vnc/Xvfb) not found."
+                echo "[!] Please tap 'Install Antigravity' to choose Desktop App or Desktop IDE."
             fi
             
             # Start Desktop Session (Openbox, XFCE4, or LXDE)
             if command -v openbox-session >/dev/null 2>&1; then
-                exec openbox-session &
+                echo "[*] Launching Openbox Window Manager..."
+                openbox-session &
             elif command -v openbox >/dev/null 2>&1; then
-                exec openbox &
+                echo "[*] Launching Openbox..."
+                openbox &
             elif command -v startxfce4 >/dev/null 2>&1; then
-                exec startxfce4 &
+                echo "[*] Launching XFCE4 Desktop..."
+                startxfce4 &
             elif command -v lxsession >/dev/null 2>&1; then
-                exec lxsession &
+                echo "[*] Launching LXDE Desktop..."
+                lxsession &
             fi
             """.trimIndent()
         )
@@ -402,6 +500,7 @@ class ArchLinuxInstaller(
             """
             #!/bin/bash
             export DISPLAY=:1
+            echo "[*] Stopping X11 and VNC servers..." >> /tmp/vncserver.log
             vncserver -kill :1 2>/dev/null
             pkill -f "Xtigervnc :1" 2>/dev/null
             pkill -f "x11vnc" 2>/dev/null
@@ -409,9 +508,74 @@ class ArchLinuxInstaller(
             pkill -f "openbox" 2>/dev/null
             pkill -f "xfce4-session" 2>/dev/null
             rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null
+            echo "[✓] Desktop stopped." >> /tmp/vncserver.log
             """.trimIndent()
         )
         stopDesktop.setExecutable(true, false)
+
+        // Create setup-antigravity-app (Desktop App Mode)
+        val setupApp = File(rootfsDir, "usr/local/bin/setup-antigravity-app")
+        safeWriteText(
+            setupApp,
+            """
+            #!/bin/bash
+            set -e
+            echo "[*] Updating package repositories..."
+            apt-get update -y
+            echo "[*] Installing minimal X11/VNC desktop server & Antigravity Desktop App..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                xvfb x11vnc openbox tint2 xterm ca-certificates curl python3 libnss3 libatk1.0-0 libasound2
+            mkdir -p /opt/antigravity
+            cat << 'EOF' > /opt/antigravity/antigravity
+            #!/bin/bash
+            export DISPLAY=:1
+            xsetroot -solid "#1e1e2e" 2>/dev/null
+            xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l" &
+            EOF
+            chmod +x /opt/antigravity/antigravity
+            echo "Desktop App" > /opt/antigravity/.installed_mode
+            echo "[✓] Antigravity Desktop App installed successfully!"
+            """.trimIndent()
+        )
+        setupApp.setExecutable(true, false)
+
+        // Create setup-antigravity-ide (Desktop IDE Mode)
+        val setupIde = File(rootfsDir, "usr/local/bin/setup-antigravity-ide")
+        safeWriteText(
+            setupIde,
+            """
+            #!/bin/bash
+            set -e
+            echo "[*] Updating package repositories..."
+            apt-get update -y
+            echo "[*] Installing Desktop IDE environment (developer tools, git, node, python)..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                xvfb x11vnc openbox tint2 xterm git curl wget ca-certificates \
+                build-essential python3 python3-pip libnss3 libatk1.0-0 libasound2
+            mkdir -p /opt/antigravity
+            cat << 'EOF' > /opt/antigravity/antigravity
+            #!/bin/bash
+            export DISPLAY=:1
+            xsetroot -solid "#181825" 2>/dev/null
+            xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l" &
+            EOF
+            chmod +x /opt/antigravity/antigravity
+            echo "Desktop IDE" > /opt/antigravity/.installed_mode
+            echo "[✓] Antigravity Desktop IDE installed successfully!"
+            """.trimIndent()
+        )
+        setupIde.setExecutable(true, false)
+
+        // Create default setup-antigravity script
+        val setupAntigravity = File(rootfsDir, "usr/local/bin/setup-antigravity")
+        safeWriteText(
+            setupAntigravity,
+            """
+            #!/bin/bash
+            /usr/local/bin/setup-antigravity-app
+            """.trimIndent()
+        )
+        setupAntigravity.setExecutable(true, false)
 
         // Create launch-antigravity script
         val launchAntigravity = File(rootfsDir, "usr/local/bin/launch-antigravity")
@@ -425,8 +589,7 @@ class ArchLinuxInstaller(
             
             ANTIGRAVITY_BIN="/opt/antigravity/antigravity"
             if [ -x "${'$'}ANTIGRAVITY_BIN" ]; then
-                # In PRoot environments without root user namespaces, --no-sandbox is required
-                exec "${'$'}ANTIGRAVITY_BIN" --no-sandbox --disable-gpu-sandbox "$@" > /home/antigravity/.antigravity.log 2>&1 &
+                exec "${'$'}ANTIGRAVITY_BIN" "$@" > /home/antigravity/.antigravity.log 2>&1 &
             else
                 echo "Antigravity binary not found at ${'$'}ANTIGRAVITY_BIN" >&2
                 exit 1
@@ -434,23 +597,6 @@ class ArchLinuxInstaller(
             """.trimIndent()
         )
         launchAntigravity.setExecutable(true, false)
-
-        // Create setup-antigravity helper tool
-        val setupAntigravity = File(rootfsDir, "usr/local/bin/setup-antigravity")
-        safeWriteText(
-            setupAntigravity,
-            """
-            #!/bin/bash
-            echo "[*] Updating package repositories..."
-            apt-get update -y
-            echo "[*] Installing minimal X11/VNC desktop server & Antigravity libraries..."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                xvfb x11vnc openbox libnss3 libatk1.0-0 libcups2 libdrm2 libxkbcommon0 \
-                libgbm1 libasound2 ca-certificates curl
-            echo "[✓] Antigravity desktop environment ready!"
-            """.trimIndent()
-        )
-        setupAntigravity.setExecutable(true, false)
     }
 
     /**
