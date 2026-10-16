@@ -24,3 +24,6 @@ Thumbs.db
 *.log
 attachments/
 *.zip
+*.apk
+build9_check/
+test_rootfs/

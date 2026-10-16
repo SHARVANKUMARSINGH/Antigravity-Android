@@ -116,29 +116,27 @@ class ArchLinuxInstaller(
             setupProotBinary(prootFile)
 
             // 5. Unpack baked-in rootfs or download from mirrors
-            val archiveFile = File(context.cacheDir, "linux-arm64-rootfs.tar.gz")
             val isExistingValid = verifyExistingRootfs()
 
             if (!isExistingValid) {
-                var hasAssetRootfs = false
-                try {
-                    context.assets.open("rootfs.tar.gz").use { stream ->
-                        hasAssetRootfs = stream.available() > 0 || true
-                    }
-                } catch (_: Exception) {
-                    hasAssetRootfs = false
+                val assetRootfsName = when {
+                    runCatching { context.assets.open("rootfs.tar.gz").close() }.isSuccess -> "rootfs.tar.gz"
+                    runCatching { context.assets.open("rootfs.tar").close() }.isSuccess -> "rootfs.tar"
+                    else -> null
                 }
+                val archiveFile = File(context.cacheDir, assetRootfsName ?: "linux-arm64-rootfs.tar.gz")
 
-                if (hasAssetRootfs) {
-                    notifyProgress(listener, "Unpack", 25, "Unpacking baked-in Linux ARM64 (27 MB)...")
+                if (assetRootfsName != null) {
+                    val isGz = assetRootfsName.endsWith(".gz")
+                    notifyProgress(listener, "Unpack", 25, if (isGz) "Unpacking baked-in Linux ARM64 (27 MB)..." else "Unpacking baked-in Linux ARM64...")
                     if (archiveFile.exists()) archiveFile.delete()
                     try {
-                        context.assets.open("rootfs.tar.gz").buffered().use { input ->
+                        context.assets.open(assetRootfsName).buffered().use { input ->
                             FileOutputStream(archiveFile).buffered().use { output ->
                                 val buffer = ByteArray(65536)
                                 var bytesRead: Int
                                 var copiedBytes = 0L
-                                val estimatedTotal = 27660560L
+                                val estimatedTotal = if (isGz) 27660560L else 75366400L
                                 var lastPercent = 25
 
                                 while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -147,7 +145,7 @@ class ArchLinuxInstaller(
                                     val percent = (25 + ((copiedBytes * 25) / estimatedTotal)).toInt().coerceIn(25, 50)
                                     if (percent > lastPercent) {
                                         lastPercent = percent
-                                        notifyProgress(listener, "Unpack", percent, "Unpacking: ${copiedBytes / (1024 * 1024)} MB / 27 MB")
+                                        notifyProgress(listener, "Unpack", percent, "Unpacking: ${copiedBytes / (1024 * 1024)} MB")
                                     }
                                 }
                                 output.flush()
@@ -365,12 +363,22 @@ class ArchLinuxInstaller(
     private suspend fun extractTarGz(archive: File, destDir: File, listener: InstallProgressListener): Boolean {
         notifyProgress(listener, "Extraction", 50, "Extracting Linux ARM64 root filesystem...")
 
-        val commands = listOf(
-            listOf("tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
-            listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
-            listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xvf - -C \"${destDir.absolutePath}\""),
-            listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xvf - -C \"${destDir.absolutePath}\"")
-        )
+        val isGz = archive.name.endsWith(".gz") || archive.name.endsWith(".tgz")
+        val commands = if (isGz) {
+            listOf(
+                listOf("tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xvf - -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xvf - -C \"${destDir.absolutePath}\"")
+            )
+        } else {
+            listOf(
+                listOf("tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("toybox", "tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("/system/bin/sh", "-c", "tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\"")
+            )
+        }
 
         for (cmd in commands) {
             try {
@@ -402,7 +410,8 @@ class ArchLinuxInstaller(
                 val exitCode = process.waitFor()
                 thread.join(2000)
 
-                val hasBash = File(destDir, "bin/bash").exists() || File(destDir, "bin/sh").exists()
+                val hasBash = File(destDir, "usr/bin/bash").exists() || File(destDir, "bin/bash").exists() ||
+                              File(destDir, "usr/bin/dash").exists() || File(destDir, "bin/sh").exists()
                 val hasEtc = File(destDir, "etc").exists()
                 if (exitCode == 0 || (hasBash && hasEtc)) {
                     notifyProgress(listener, "Extraction", 85, "Extracted $fileCount files successfully.")

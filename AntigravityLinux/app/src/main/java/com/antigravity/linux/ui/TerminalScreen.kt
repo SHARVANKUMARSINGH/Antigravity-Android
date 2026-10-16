@@ -145,7 +145,7 @@ fun TerminalScreen(
                 label = { Text("os-release", fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
             )
             AssistChip(
-                onClick = { terminalSession.sendCommand("pacman -Q | head -20") },
+                onClick = { terminalSession.sendCommand("dpkg -l | head -20") },
                 label = { Text("packages", fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
             )
             AssistChip(

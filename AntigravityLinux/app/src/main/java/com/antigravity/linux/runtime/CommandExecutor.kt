@@ -222,6 +222,10 @@ class CommandExecutor(
         val cmdList = buildProotCommand(workDir, shellPath, "-c", command)
 
         val processBuilder = ProcessBuilder(cmdList)
+        val hostWorkDir = context?.filesDir ?: rootfsDir
+        if (hostWorkDir.exists()) {
+            processBuilder.directory(hostWorkDir)
+        }
         val env = processBuilder.environment()
         applyProotEnvironment(env, asUser, envVars)
 
@@ -274,6 +278,9 @@ class CommandExecutor(
                 try {
                     val fallbackList = buildProotCommand(workDir, "/bin/sh", "-c", command)
                     val fallbackBuilder = ProcessBuilder(fallbackList)
+                    if (hostWorkDir.exists()) {
+                        fallbackBuilder.directory(hostWorkDir)
+                    }
                     val fallbackEnv = fallbackBuilder.environment()
                     applyProotEnvironment(fallbackEnv, asUser, envVars)
                     val fallbackProc = fallbackBuilder.start()
@@ -365,6 +372,10 @@ class CommandExecutor(
         val cmdList = buildProotCommand(workDir, shellPath, "-l")
 
         val processBuilder = ProcessBuilder(cmdList)
+        val hostWorkDir = context?.filesDir ?: rootfsDir
+        if (hostWorkDir.exists()) {
+            processBuilder.directory(hostWorkDir)
+        }
         val env = processBuilder.environment()
         applyProotEnvironment(env, asUser, emptyMap())
 

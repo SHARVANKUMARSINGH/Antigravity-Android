@@ -45,6 +45,9 @@ android {
             useLegacyPackaging = true
         }
     }
+    androidResources {
+        noCompress += listOf("gz", "tgz", "tar")
+    }
 }
 
 dependencies {
