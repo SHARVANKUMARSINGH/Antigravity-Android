@@ -1,0 +1,59 @@
+name: Build Antigravity Linux APK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: # Allows manual trigger from GitHub Actions web/mobile UI
+
+jobs:
+  build:
+    name: Build Android APK on Cloud
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Gradle Cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x AntigravityLinux/gradlew
+
+      - name: Compile Android APK (assembleDebug)
+        run: |
+          cd AntigravityLinux
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK as Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-Linux-Debug-APK
+          path: AntigravityLinux/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Create GitHub Release with APK
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-build-${{ github.run_number }}
+          name: Antigravity Linux Build #${{ github.run_number }}
+          body: |
+            ### Antigravity Linux (Arch Linux ARM64 Desktop)
+            Automated cloud build compiled via GitHub Actions.
+            
+            **Installation Instructions:**
+            1. Download `app-debug.apk` directly to your Android phone below.
+            2. Tap to install (enable "Install unknown apps" if prompted).
+            3. Open **Antigravity Linux** and tap **Initialize Arch Linux**.
+          files: AntigravityLinux/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
