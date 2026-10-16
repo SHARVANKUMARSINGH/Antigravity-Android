@@ -26,12 +26,11 @@ class ArchLinuxInstaller(
 ) {
 
     companion object {
-        const val REQUIRED_STORAGE_BYTES = 1200L * 1024 * 1024 // 1.2 GB
+        const val REQUIRED_STORAGE_BYTES = 250L * 1024 * 1024 // 250 MB (Ultra-Light 27MB rootfs)
         val ROOTFS_URLS = listOf(
-            "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
-            "https://mirrors.dotsrc.org/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz",
-            "http://fl.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
-            "http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04-base-arm64.tar.gz",
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04.5/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+            "http://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04-base-arm64.tar.gz"
         )
     }
 
@@ -53,9 +52,32 @@ class ArchLinuxInstaller(
         }
     }
 
+    private fun safeWriteText(file: File, content: String) {
+        try {
+            file.parentFile?.mkdirs()
+            // Delete if file or broken symlink
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    java.nio.file.Files.deleteIfExists(file.toPath())
+                } catch (_: Exception) {}
+            }
+            try {
+                file.delete()
+            } catch (_: Exception) {}
+        } catch (_: Exception) {}
+
+        try {
+            file.writeText(content)
+        } catch (_: Exception) {
+            try {
+                FileOutputStream(file).use { it.write(content.toByteArray(Charsets.UTF_8)) }
+            } catch (_: Exception) {}
+        }
+    }
+
     suspend fun install(listener: InstallProgressListener): Boolean = withContext(Dispatchers.IO) {
         try {
-            // 1. Storage Pre-flight Check
+            // 1. Storage Pre-flight Check (250MB required for 27MB ultra-small rootfs)
             notifyProgress(listener, "Storage Check", 5, "Verifying free storage space...")
             val statFs = StatFs(context.filesDir.absolutePath)
             val availableBytes = statFs.availableBlocksLong * statFs.blockSizeLong
@@ -78,7 +100,7 @@ class ArchLinuxInstaller(
                 notifyError(
                     listener,
                     "Architecture Check",
-                    "Unsupported architecture: ${cpuInfo.architecture}. Antigravity Linux requires ARM64 (aarch64)."
+                    "Unsupported architecture: ${cpuInfo.architecture}. Antigravity requires ARM64 (aarch64)."
                 )
                 return@withContext false
             }
@@ -94,19 +116,18 @@ class ArchLinuxInstaller(
             setupProotBinary(prootFile)
 
             // 5. Download or verify existing rootfs
-            val archiveFile = File(context.cacheDir, "ArchLinuxARM-aarch64.tar.gz")
+            val archiveFile = File(context.cacheDir, "linux-arm64-rootfs.tar.gz")
             val isExistingValid = verifyExistingRootfs()
 
             if (!isExistingValid) {
-                notifyProgress(listener, "Download", 25, "Fetching Arch Linux ARM64 userspace...")
+                notifyProgress(listener, "Download", 25, "Fetching Ultra-Light Linux ARM64 (27 MB)...")
                 val downloadSuccess = downloadRootfs(archiveFile, listener)
                 if (!downloadSuccess) {
-                    notifyError(listener, "Download", "Failed to download Arch Linux ARM64 root filesystem archive from all mirrors.")
+                    notifyError(listener, "Download", "Failed to download Linux rootfs from all mirrors.")
                     return@withContext false
                 }
 
-                // 6. Extraction
-                notifyProgress(listener, "Extraction", 60, "Extracting Arch Linux ARM64 filesystem...")
+                // 6. Extraction with live progress
                 val extracted = extractTarGz(archiveFile, rootfsDir, listener)
                 if (!extracted) {
                     notifyError(listener, "Extraction", "Failed to extract root filesystem.")
@@ -115,25 +136,25 @@ class ArchLinuxInstaller(
 
                 archiveFile.delete() // Cleanup temporary archive
             } else {
-                notifyProgress(listener, "Verification", 60, "Existing Arch Linux installation detected and validated.")
+                notifyProgress(listener, "Verification", 60, "Existing Linux installation detected and validated.")
             }
 
             // 7. Configure Linux Filesystem
-            notifyProgress(listener, "Configuration", 80, "Configuring network, users, and desktop scripts...")
+            notifyProgress(listener, "Configuration", 88, "Configuring network, DNS, and Antigravity scripts...")
             configureRootfs()
 
             // 8. Verify Execution
-            notifyProgress(listener, "Verification", 90, "Testing ARM64 execution in PRoot...")
+            notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
             val executor = CommandExecutor(rootfsDir, prootFile)
             val testResult = executor.executeInLinux("uname -m")
 
             if (testResult.isSuccess && testResult.stdout.contains("aarch64")) {
-                notifyProgress(listener, "Complete", 100, "Arch Linux ARM64 userspace successfully ready.")
-                notifySuccess(listener, "Arch Linux ARM64 installed and verified successfully (Kernel: aarch64)")
+                notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
+                notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
                 return@withContext true
             } else {
-                notifyProgress(listener, "Complete", 100, "Arch Linux rootfs prepared successfully.")
-                notifySuccess(listener, "Arch Linux ARM64 userspace ready.")
+                notifyProgress(listener, "Complete", 100, "Linux userspace prepared successfully.")
+                notifySuccess(listener, "Ultra-Light Linux ARM64 ready.")
                 return@withContext true
             }
 
@@ -145,21 +166,19 @@ class ArchLinuxInstaller(
 
     private fun verifyExistingRootfs(): Boolean {
         val etcDir = File(rootfsDir, "etc")
-        val binBash = File(rootfsDir, "bin/bash")
-        val usrLib = File(rootfsDir, "usr/lib")
-        return etcDir.exists() && binBash.exists() && usrLib.exists()
+        val hasShell = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "bin/sh").exists()
+        val hasLib = File(rootfsDir, "usr/lib").exists() || File(rootfsDir, "lib").exists() || File(rootfsDir, "usr/bin").exists()
+        return etcDir.exists() && hasShell && hasLib
     }
 
     private fun setupProotBinary(prootFile: File) {
         if (!prootFile.exists() || prootFile.length() == 0L) {
-            // Write portable proot launcher or copy from native libraries
             val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
             val bundledProot = File(nativeLibDir, "libproot.so")
 
             if (bundledProot.exists()) {
                 bundledProot.copyTo(prootFile, overwrite = true)
             } else {
-                // Create executable wrapper script that handles proot execution
                 prootFile.writeText(
                     """
                     #!/system/bin/sh
@@ -184,13 +203,14 @@ class ArchLinuxInstaller(
             val maxRedirects = 5
 
             try {
-                notifyProgress(listener, "Download", 25, "Connecting to mirror: ${URL(currentUrl).host}...")
+                val hostName = try { URL(currentUrl).host } catch (_: Exception) { "mirror" }
+                notifyProgress(listener, "Download", 25, "Connecting to $hostName (27 MB)...")
 
                 while (redirectCount < maxRedirects) {
                     val urlObj = URL(currentUrl)
                     connection = urlObj.openConnection() as HttpURLConnection
-                    connection.connectTimeout = 20000
-                    connection.readTimeout = 30000
+                    connection.connectTimeout = 15000
+                    connection.readTimeout = 25000
                     connection.instanceFollowRedirects = true
                     connection.setRequestProperty("User-Agent", "Mozilla/5.0 AntigravityLinux/1.0")
 
@@ -233,12 +253,12 @@ class ArchLinuxInstaller(
                             downloadedBytes += bytesRead
 
                             if (totalBytes > 0) {
-                                val percent = (25 + ((downloadedBytes * 35) / totalBytes)).toInt()
+                                val percent = (25 + ((downloadedBytes * 25) / totalBytes)).toInt() // 25% -> 50%
                                 if (percent > lastPercent) {
                                     lastPercent = percent
-                                    val mbDone = downloadedBytes / (1024 * 1024)
-                                    val mbTotal = totalBytes / (1024 * 1024)
-                                    notifyProgress(listener, "Download", percent, "Downloaded $mbDone MB of $mbTotal MB")
+                                    val mbDone = String.format(java.util.Locale.US, "%.1f", downloadedBytes / (1024f * 1024f))
+                                    val mbTotal = String.format(java.util.Locale.US, "%.1f", totalBytes / (1024f * 1024f))
+                                    notifyProgress(listener, "Download", percent, "Downloading: $mbDone MB / $mbTotal MB")
                                 }
                             }
                         }
@@ -246,7 +266,7 @@ class ArchLinuxInstaller(
                     }
                 }
 
-                if (tempFile.exists() && tempFile.length() > 50 * 1024 * 1024) {
+                if (tempFile.exists() && tempFile.length() > 5 * 1024 * 1024) { // At least 5MB for valid 27MB rootfs
                     if (targetFile.exists()) targetFile.delete()
                     if (tempFile.renameTo(targetFile)) {
                         return true
@@ -262,59 +282,85 @@ class ArchLinuxInstaller(
     }
 
     private suspend fun extractTarGz(archive: File, destDir: File, listener: InstallProgressListener): Boolean {
-        notifyProgress(listener, "Extraction", 60, "Extracting Arch Linux ARM64 root filesystem...")
+        notifyProgress(listener, "Extraction", 50, "Extracting Linux ARM64 root filesystem...")
 
         val commands = listOf(
-            listOf("tar", "-xzf", archive.absolutePath, "-C", destDir.absolutePath),
-            listOf("toybox", "tar", "-xzf", archive.absolutePath, "-C", destDir.absolutePath),
-            listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xf - -C \"${destDir.absolutePath}\""),
-            listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xf - -C \"${destDir.absolutePath}\"")
+            listOf("tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
+            listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
+            listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xvf - -C \"${destDir.absolutePath}\""),
+            listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xvf - -C \"${destDir.absolutePath}\"")
         )
 
         for (cmd in commands) {
             try {
                 val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
                 val reader = process.inputStream.bufferedReader()
+                var fileCount = 0
+                var lastUpdate = 0L
+
                 val thread = Thread {
                     try {
-                        while (reader.readLine() != null) {}
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            fileCount++
+                            val now = System.currentTimeMillis()
+                            if (now - lastUpdate > 150) {
+                                lastUpdate = now
+                                val raw = line?.trim() ?: ""
+                                val cleanName = if (raw.length > 32) "..." + raw.takeLast(29) else raw
+                                val percent = (50 + minOf(35, fileCount / 30)).coerceIn(50, 85)
+                                kotlinx.coroutines.runBlocking {
+                                    notifyProgress(listener, "Extraction", percent, "[$fileCount files] $cleanName")
+                                }
+                            }
+                        }
                     } catch (_: Exception) {}
                 }
                 thread.start()
 
                 val exitCode = process.waitFor()
-                thread.join(1000)
+                thread.join(2000)
 
-                val bash = File(destDir, "bin/bash")
-                val usrBin = File(destDir, "usr/bin")
-                if (exitCode == 0 || (bash.exists() || usrBin.exists())) {
+                val hasBash = File(destDir, "bin/bash").exists() || File(destDir, "bin/sh").exists()
+                val hasEtc = File(destDir, "etc").exists()
+                if (exitCode == 0 || (hasBash && hasEtc)) {
+                    notifyProgress(listener, "Extraction", 85, "Extracted $fileCount files successfully.")
                     return true
                 }
             } catch (_: Exception) {}
         }
 
-        notifyError(listener, "Extraction", "Could not extract rootfs. Please verify storage permissions.")
+        notifyError(listener, "Extraction", "Could not extract root filesystem.")
         return false
     }
 
     private fun configureRootfs() {
-        // Configure DNS resolver
+        // Pre-create all critical directory trees
+        File(rootfsDir, "etc").mkdirs()
+        File(rootfsDir, "run/systemd/resolve").mkdirs()
+        File(rootfsDir, "tmp").mkdirs()
+        File(rootfsDir, "dev").mkdirs()
+        File(rootfsDir, "proc").mkdirs()
+        File(rootfsDir, "sys").mkdirs()
+        File(rootfsDir, "home/antigravity").mkdirs()
+        File(rootfsDir, "usr/local/bin").mkdirs()
+
+        // Configure DNS resolver (safely handles any broken symlink)
         val resolvConf = File(rootfsDir, "etc/resolv.conf")
-        resolvConf.parentFile?.mkdirs()
-        resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+        safeWriteText(resolvConf, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+
+        // Also write to stub-resolv.conf
+        val stubResolv = File(rootfsDir, "run/systemd/resolve/stub-resolv.conf")
+        safeWriteText(stubResolv, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
 
         // Configure hosts
         val hosts = File(rootfsDir, "etc/hosts")
-        hosts.writeText("127.0.0.1 localhost\n::1 localhost\n")
-
-        // Configure user home directory
-        val userHome = File(rootfsDir, "home/antigravity")
-        if (!userHome.exists()) userHome.mkdirs()
+        safeWriteText(hosts, "127.0.0.1 localhost\n::1 localhost\n")
 
         // Create start-desktop script
         val startDesktop = File(rootfsDir, "usr/local/bin/start-desktop")
-        startDesktop.parentFile?.mkdirs()
-        startDesktop.writeText(
+        safeWriteText(
+            startDesktop,
             """
             #!/bin/bash
             export DISPLAY=:1
@@ -335,11 +381,13 @@ class ArchLinuxInstaller(
                 x11vnc -display :1 -rfbport 5901 -nopw -forever -bg
             fi
             
-            # Start Desktop Session (XFCE4, Openbox, or LXDE)
-            if command -v startxfce4 >/dev/null 2>&1; then
-                exec startxfce4 &
-            elif command -v openbox-session >/dev/null 2>&1; then
+            # Start Desktop Session (Openbox, XFCE4, or LXDE)
+            if command -v openbox-session >/dev/null 2>&1; then
                 exec openbox-session &
+            elif command -v openbox >/dev/null 2>&1; then
+                exec openbox &
+            elif command -v startxfce4 >/dev/null 2>&1; then
+                exec startxfce4 &
             elif command -v lxsession >/dev/null 2>&1; then
                 exec lxsession &
             fi
@@ -349,7 +397,8 @@ class ArchLinuxInstaller(
 
         // Create stop-desktop script
         val stopDesktop = File(rootfsDir, "usr/local/bin/stop-desktop")
-        stopDesktop.writeText(
+        safeWriteText(
+            stopDesktop,
             """
             #!/bin/bash
             export DISPLAY=:1
@@ -357,8 +406,8 @@ class ArchLinuxInstaller(
             pkill -f "Xtigervnc :1" 2>/dev/null
             pkill -f "x11vnc" 2>/dev/null
             pkill -f "Xvfb :1" 2>/dev/null
-            pkill -f "xfce4-session" 2>/dev/null
             pkill -f "openbox" 2>/dev/null
+            pkill -f "xfce4-session" 2>/dev/null
             rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null
             """.trimIndent()
         )
@@ -366,7 +415,8 @@ class ArchLinuxInstaller(
 
         // Create launch-antigravity script
         val launchAntigravity = File(rootfsDir, "usr/local/bin/launch-antigravity")
-        launchAntigravity.writeText(
+        safeWriteText(
+            launchAntigravity,
             """
             #!/bin/bash
             export DISPLAY=:1
@@ -384,6 +434,23 @@ class ArchLinuxInstaller(
             """.trimIndent()
         )
         launchAntigravity.setExecutable(true, false)
+
+        // Create setup-antigravity helper tool
+        val setupAntigravity = File(rootfsDir, "usr/local/bin/setup-antigravity")
+        safeWriteText(
+            setupAntigravity,
+            """
+            #!/bin/bash
+            echo "[*] Updating package repositories..."
+            apt-get update -y
+            echo "[*] Installing minimal X11/VNC desktop server & Antigravity libraries..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                xvfb x11vnc openbox libnss3 libatk1.0-0 libcups2 libdrm2 libxkbcommon0 \
+                libgbm1 libasound2 ca-certificates curl
+            echo "[✓] Antigravity desktop environment ready!"
+            """.trimIndent()
+        )
+        setupAntigravity.setExecutable(true, false)
     }
 
     /**

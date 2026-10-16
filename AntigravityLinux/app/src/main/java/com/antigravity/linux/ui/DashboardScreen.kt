@@ -114,7 +114,7 @@ private fun AppHeader(diagnostics: SystemDiagnostics) {
                 color = TextPrimary
             )
             Text(
-                text = "Arch Linux ARM64 Desktop",
+                text = "Ultra-Light Linux ARM64 Desktop",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Violet40
             )
@@ -293,10 +293,10 @@ private fun ControlActionsCard(
                 color = TextPrimary
             )
 
-            // 1. Initialize Arch Linux
+            // 1. Initialize Ultra-Light Linux
             ActionButton(
-                title = "1. Initialize Arch Linux",
-                subtitle = "Download, extract, and configure ARM64 rootfs",
+                title = "1. Initialize Ultra-Light Linux",
+                subtitle = "Fast 27 MB download • Pure ARM64 runtime for Antigravity",
                 icon = Icons.Default.CloudDownload,
                 containerColor = SurfaceCardElevated,
                 contentColor = Violet40,
@@ -307,7 +307,7 @@ private fun ControlActionsCard(
             // 2. Start Linux Desktop
             ActionButton(
                 title = "2. Start Linux Desktop",
-                subtitle = "Launch X11/VNC display server & window manager",
+                subtitle = "Launch X11 display server & Antigravity host",
                 icon = Icons.Default.DesktopWindows,
                 containerColor = SurfaceCardElevated,
                 contentColor = StatusGreen,
@@ -329,7 +329,7 @@ private fun ControlActionsCard(
             // 4. Open Terminal
             ActionButton(
                 title = "4. Open Terminal",
-                subtitle = "Direct interactive bash shell in Arch Linux userspace",
+                subtitle = "Direct interactive bash shell & package manager (apt)",
                 icon = Icons.Default.Terminal,
                 containerColor = SurfaceCardElevated,
                 contentColor = StatusBlue,
@@ -339,8 +339,8 @@ private fun ControlActionsCard(
 
             // 5. Open Desktop Session
             ActionButton(
-                title = "5. Open Desktop Session",
-                subtitle = "Interactive touch canvas with keyboard and mouse controls",
+                title = "5. Open Desktop Canvas",
+                subtitle = "Interactive touch desktop with mouse & virtual keyboard",
                 icon = Icons.Default.OpenInNew,
                 containerColor = SurfaceCardElevated,
                 contentColor = StatusGreen,
@@ -403,23 +403,31 @@ private fun ActionButton(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 54.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .heightIn(min = 58.dp)
+            .clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, onClick = onClick),
         color = if (enabled) containerColor else containerColor.copy(alpha = 0.5f),
         border = BorderStroke(1.dp, SurfaceBorder)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
-                modifier = Modifier.size(24.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (enabled) contentColor.copy(alpha = 0.15f) else SurfaceBorder),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -459,7 +467,7 @@ private fun InstallationProgressCard(progress: Int, statusMessage: String) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Setting up Arch Linux ARM64...",
+                    text = "Setting up Ultra-Light Linux ARM64 (27 MB)...",
                     style = MaterialTheme.typography.titleSmall,
                     color = Violet40,
                     fontWeight = FontWeight.SemiBold

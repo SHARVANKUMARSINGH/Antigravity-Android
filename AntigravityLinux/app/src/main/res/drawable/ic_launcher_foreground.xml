@@ -3,20 +3,50 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Terminal window container -->
+
+    <!-- Glowing orbital halo around safe zone -->
     <path
-        android:fillColor="#FF212121"
-        android:pathData="M24,28h60c2.2,0 4,1.8 4,4v44c0,2.2 -1.8,4 -4,4H24c-2.2,0 -4,-1.8 -4,-4V32c0,-2.2 1.8,-4 4,-4z" />
-    <!-- Terminal top bar -->
+        android:fillColor="#158B5CF6"
+        android:pathData="M54,54m-28,0a28,28 0,1 1,56 0a28,28 0,1 1,-56 0" />
+
+    <!-- Sleek Rounded Terminal Container (Centered: 48x44, x: 30..78, y: 32..76) -->
     <path
-        android:fillColor="#FF333333"
-        android:pathData="M20,32v6h68v-6c0,-2.2 -1.8,-4 -4,-4H24c-2.2,0 -4,1.8 -4,4z" />
-    <!-- Terminal prompt symbol '>' -->
+        android:fillColor="#FF1E1B4B"
+        android:strokeColor="#FF7C3AED"
+        android:strokeWidth="1.5"
+        android:pathData="M34,34 h40 c3.3,0 6,2.7 6,6 v30 c0,3.3 -2.7,6 -6,6 h-40 c-3.3,0 -6,-2.7 -6,-6 v-30 c0,-3.3 2.7,-6 6,-6 z" />
+
+    <!-- Terminal Titlebar Header -->
     <path
-        android:fillColor="#FF00E676"
-        android:pathData="M32,46l8,8 -8,8 2.8,2.8 10.8,-10.8L34.8,43.2z" />
-    <!-- Terminal cursor '_' -->
+        android:fillColor="#FF2E1065"
+        android:pathData="M34,34 h40 c3.3,0 6,2.7 6,6 v6 h-52 v-6 c0,-3.3 2.7,-6 6,-6 z" />
+
+    <!-- Titlebar status dots (Red, Amber, Green) -->
+    <!-- Red dot -->
     <path
-        android:fillColor="#FF00E676"
-        android:pathData="M48,62h16v3H48z" />
+        android:fillColor="#FFEF4444"
+        android:pathData="M36,40 a1.5,1.5 0,1 0,3 0 a1.5,1.5 0,1 0,-3 0" />
+    <!-- Yellow dot -->
+    <path
+        android:fillColor="#FFF59E0B"
+        android:pathData="M41,40 a1.5,1.5 0,1 0,3 0 a1.5,1.5 0,1 0,-3 0" />
+    <!-- Green dot -->
+    <path
+        android:fillColor="#FF10B981"
+        android:pathData="M46,40 a1.5,1.5 0,1 0,3 0 a1.5,1.5 0,1 0,-3 0" />
+
+    <!-- Antigravity Chevron '>' prompt in Electric Cyan -->
+    <path
+        android:fillColor="#FF06B6D4"
+        android:pathData="M36,52 l6,5 -6,5 1.8,1.8 7.8,-6.8 -7.8,-6.8 z" />
+
+    <!-- Floating Antigravity Lambda / Rocket Glyph in Bright Violet -->
+    <path
+        android:fillColor="#FFA78BFA"
+        android:pathData="M52,65 l4,-14 l4,14 h-2.2 l-1.8,-7 h-2 l-1.8,7 z" />
+
+    <!-- Active Terminal Cursor '_' in Terminal Green -->
+    <path
+        android:fillColor="#FF10B981"
+        android:pathData="M64,63 h9 v2 h-9 z" />
 </vector>

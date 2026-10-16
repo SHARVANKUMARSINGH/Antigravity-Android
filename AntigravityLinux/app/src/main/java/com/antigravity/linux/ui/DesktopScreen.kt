@@ -202,7 +202,7 @@ fun DesktopScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBackToDashboard, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = TextPrimary, modifier = Modifier.size(20.dp))
             }
             Text(
                 text = desktopInfo,
@@ -214,11 +214,12 @@ fun DesktopScreen(
                     Icon(
                         imageVector = if (fitToScreen) Icons.Default.ZoomOutMap else Icons.Default.FitScreen,
                         contentDescription = "Scaling",
-                        tint = Violet40
+                        tint = Violet40,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
                 IconButton(onClick = onOpenSettings, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary)
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary, modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -322,25 +323,25 @@ fun DesktopScreen(
                         onClick = { desktopManager.sendKeyStroke(KeySymbols.LEFT) },
                         modifier = Modifier.size(32.dp)
                     ) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Left", tint = TextPrimary)
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Left", tint = TextPrimary, modifier = Modifier.size(18.dp))
                     }
                     IconButton(
                         onClick = { desktopManager.sendKeyStroke(KeySymbols.UP) },
                         modifier = Modifier.size(32.dp)
                     ) {
-                        Icon(Icons.Default.ArrowUpward, contentDescription = "Up", tint = TextPrimary)
+                        Icon(Icons.Default.ArrowUpward, contentDescription = "Up", tint = TextPrimary, modifier = Modifier.size(18.dp))
                     }
                     IconButton(
                         onClick = { desktopManager.sendKeyStroke(KeySymbols.DOWN) },
                         modifier = Modifier.size(32.dp)
                     ) {
-                        Icon(Icons.Default.ArrowDownward, contentDescription = "Down", tint = TextPrimary)
+                        Icon(Icons.Default.ArrowDownward, contentDescription = "Down", tint = TextPrimary, modifier = Modifier.size(18.dp))
                     }
                     IconButton(
                         onClick = { desktopManager.sendKeyStroke(KeySymbols.RIGHT) },
                         modifier = Modifier.size(32.dp)
                     ) {
-                        Icon(Icons.Default.ArrowForward, contentDescription = "Right", tint = TextPrimary)
+                        Icon(Icons.Default.ArrowForward, contentDescription = "Right", tint = TextPrimary, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -367,7 +368,8 @@ fun DesktopScreen(
                     Icon(
                         imageVector = Icons.Default.Keyboard,
                         contentDescription = "Keyboard",
-                        tint = if (showKeyboard) Violet40 else TextSecondary
+                        tint = if (showKeyboard) Violet40 else TextSecondary,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
 
@@ -385,7 +387,8 @@ fun DesktopScreen(
                         Icon(
                             Icons.Default.Mouse,
                             contentDescription = "Left Click",
-                            tint = if (currentMouseMode == 1) StatusGreen else TextSecondary
+                            tint = if (currentMouseMode == 1) StatusGreen else TextSecondary,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                     IconButton(
@@ -395,7 +398,8 @@ fun DesktopScreen(
                         Icon(
                             Icons.Default.TouchApp,
                             contentDescription = "Right Click",
-                            tint = if (currentMouseMode == 4) StatusOrange else TextSecondary
+                            tint = if (currentMouseMode == 4) StatusOrange else TextSecondary,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -438,7 +442,8 @@ fun DesktopScreen(
                     Icon(
                         imageVector = if (showModifiers) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = "Toggle Modifiers",
-                        tint = TextSecondary
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
