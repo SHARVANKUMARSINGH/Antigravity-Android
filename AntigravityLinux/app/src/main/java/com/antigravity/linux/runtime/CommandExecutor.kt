@@ -49,6 +49,132 @@ class CommandExecutor(
     }
 
     /**
+     * Resolves the executable PRoot loader.
+     * Android 10+ restricts execution from writable directories (cacheDir / filesDir).
+     * Supplying PROOT_LOADER pointing to an extracted native library (.so) bypasses W^X noexec restrictions.
+     */
+    fun getEffectiveLoader(): File? {
+        if (context != null) {
+            val libDir = File(context.applicationInfo.nativeLibraryDir)
+            for (name in listOf("libproot-loader.so", "libprootloader.so")) {
+                val f = File(libDir, name)
+                if (f.exists() && f.length() > 0) {
+                    try { f.setExecutable(true, false) } catch (_: Exception) {}
+                    return f
+                }
+            }
+            for (name in listOf("bin/proot-loader", "bin/prootloader")) {
+                val f = File(context.filesDir, name)
+                if (f.exists() && f.length() > 0) {
+                    try { f.setExecutable(true, false) } catch (_: Exception) {}
+                    return f
+                }
+            }
+        }
+        val parent = rootfsDir.parentFile ?: return null
+        for (name in listOf("bin/proot-loader", "bin/prootloader")) {
+            val f = File(parent, name)
+            if (f.exists() && f.length() > 0) {
+                try { f.setExecutable(true, false) } catch (_: Exception) {}
+                return f
+            }
+        }
+        return null
+    }
+
+    /**
+     * Resolves an app-writable temporary directory for PRoot translation tables and sockets.
+     */
+    fun getProotTmpDir(): File {
+        val baseDir = context?.cacheDir ?: File(rootfsDir.parentFile ?: rootfsDir, "tmp")
+        val tmpDir = File(baseDir, "proot_tmp")
+        if (!tmpDir.exists()) {
+            tmpDir.mkdirs()
+        }
+        try {
+            tmpDir.setReadable(true, false)
+            tmpDir.setWritable(true, false)
+            tmpDir.setExecutable(true, false)
+        } catch (_: Exception) {}
+        return tmpDir
+    }
+
+    /**
+     * Determines the appropriate shell binary to execute inside the rootfs.
+     */
+    fun resolveShellPath(): String {
+        return when {
+            File(rootfsDir, "usr/bin/bash").exists() -> "/usr/bin/bash"
+            File(rootfsDir, "bin/bash").exists() -> "/bin/bash"
+            File(rootfsDir, "usr/bin/dash").exists() -> "/usr/bin/dash"
+            File(rootfsDir, "bin/sh").exists() -> "/bin/sh"
+            File(rootfsDir, "usr/bin/sh").exists() -> "/usr/bin/sh"
+            else -> "/bin/sh"
+        }
+    }
+
+    /**
+     * Builds the PRoot command-line invocation list with all Android-compatible bindings.
+     */
+    fun buildProotCommand(
+        workDir: String = "/root",
+        vararg extraArgs: String
+    ): List<String> {
+        val effectiveProot = getEffectiveProot()
+        val prootPath = effectiveProot.absolutePath
+        val rootfsPath = rootfsDir.absolutePath
+
+        val cmdList = mutableListOf<String>()
+        cmdList.add(prootPath)
+        cmdList.add("--link2symlink")
+        cmdList.add("-0")
+        cmdList.add("-r")
+        cmdList.add(rootfsPath)
+        cmdList.add("-b")
+        cmdList.add("/dev")
+        cmdList.add("-b")
+        cmdList.add("/proc")
+        cmdList.add("-b")
+        cmdList.add("/sys")
+        cmdList.add("-w")
+        cmdList.add(workDir)
+        cmdList.addAll(extraArgs)
+        return cmdList
+    }
+
+    /**
+     * Applies standard PRoot environment variables for Android.
+     */
+    fun applyProotEnvironment(
+        env: MutableMap<String, String>,
+        asUser: String = "root",
+        extraVars: Map<String, String> = emptyMap()
+    ) {
+        val tmpDir = getProotTmpDir()
+        env["PROOT_TMP_DIR"] = tmpDir.absolutePath
+        env["TMPDIR"] = tmpDir.absolutePath
+        env["PROOT_NO_SECCOMP"] = "1"
+        env["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
+        env["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
+
+        val effectiveLoader = getEffectiveLoader()
+        if (effectiveLoader != null && effectiveLoader.exists()) {
+            env["PROOT_LOADER"] = effectiveLoader.absolutePath
+        }
+
+        // Prevent host preloaded libraries from breaking guest executables
+        env.remove("LD_PRELOAD")
+
+        env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
+        env["USER"] = asUser
+        env["TERM"] = "xterm-256color"
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        env["LANG"] = "en_US.UTF-8"
+        env["DISPLAY"] = ":1"
+        env.putAll(extraVars)
+    }
+
+    /**
      * Executes a command inside the Linux rootfs using PRoot.
      */
     suspend fun executeInLinux(
@@ -90,38 +216,12 @@ class CommandExecutor(
             effectiveProot.setExecutable(true, false)
         } catch (_: Exception) {}
 
-        val prootPath = effectiveProot.absolutePath
-        val rootfsPath = rootfsDir.absolutePath
-
-        val cmdList = mutableListOf<String>()
-        cmdList.add(prootPath)
-        cmdList.add("--link2symlink")
-        cmdList.add("-0")
-        cmdList.add("-r")
-        cmdList.add(rootfsPath)
-        cmdList.add("-b")
-        cmdList.add("/dev")
-        cmdList.add("-b")
-        cmdList.add("/proc")
-        cmdList.add("-b")
-        cmdList.add("/sys")
-        cmdList.add("-w")
-        cmdList.add(workDir)
-
-        val hasBash = File(rootfsDir, "usr/bin/bash").exists() || File(rootfsDir, "bin/bash").exists()
-        cmdList.add(if (hasBash) "/bin/bash" else "/bin/sh")
-        cmdList.add("-c")
-        cmdList.add(command)
+        val shellPath = resolveShellPath()
+        val cmdList = buildProotCommand(workDir, shellPath, "-c", command)
 
         val processBuilder = ProcessBuilder(cmdList)
         val env = processBuilder.environment()
-        env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
-        env["USER"] = asUser
-        env["TERM"] = "xterm-256color"
-        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        env["LANG"] = "en_US.UTF-8"
-        env["DISPLAY"] = ":1"
-        env.putAll(envVars)
+        applyProotEnvironment(env, asUser, envVars)
 
         try {
             val process = processBuilder.start()
@@ -227,36 +327,17 @@ class CommandExecutor(
         workDir: String = "/home/antigravity",
         asUser: String = "antigravity"
     ): Process {
-        val prootPath = prootBin.absolutePath
-        val rootfsPath = rootfsDir.absolutePath
+        val effectiveProot = getEffectiveProot()
+        try {
+            effectiveProot.setExecutable(true, false)
+        } catch (_: Exception) {}
 
-        val isScript = prootBin.exists() && try {
-            prootBin.inputStream().use { it.read() == '#'.code && it.read() == '!'.code }
-        } catch (_: Exception) { false }
-
-        val cmdList = mutableListOf<String>()
-        if (isScript) {
-            cmdList.add("/system/bin/sh")
-        }
-        cmdList.addAll(listOf(
-            prootPath,
-            "-r", rootfsPath,
-            "-0",
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/sys",
-            "-w", workDir,
-            "/bin/bash", "-l"
-        ))
+        val shellPath = resolveShellPath()
+        val cmdList = buildProotCommand(workDir, shellPath, "-l")
 
         val processBuilder = ProcessBuilder(cmdList)
         val env = processBuilder.environment()
-        env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
-        env["USER"] = asUser
-        env["TERM"] = "xterm-256color"
-        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        env["LANG"] = "en_US.UTF-8"
-        env["DISPLAY"] = ":1"
+        applyProotEnvironment(env, asUser, emptyMap())
 
         return processBuilder.start()
     }

@@ -187,14 +187,14 @@ class ArchLinuxInstaller(
             val executor = CommandExecutor(rootfsDir, prootFile, context)
             val testResult = executor.executeInLinux("uname -m")
 
-            if (testResult.isSuccess && testResult.stdout.contains("aarch64")) {
+            if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.isNotBlank())) {
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
                 return@withContext true
             } else {
-                notifyProgress(listener, "Complete", 100, "Linux userspace prepared successfully.")
-                notifySuccess(listener, "Ultra-Light Linux ARM64 ready.")
-                return@withContext true
+                val err = testResult.stderr.ifBlank { testResult.stdout }
+                notifyError(listener, "Verification", "PRoot test failed: $err")
+                return@withContext false
             }
 
         } catch (e: Exception) {
@@ -237,6 +237,35 @@ class ArchLinuxInstaller(
             prootFile.setExecutable(true, false)
             prootFile.setReadable(true, false)
         } catch (_: Exception) {}
+
+        // Set up loader fallbacks in binDir
+        for (loaderName in listOf("proot-loader", "prootloader")) {
+            val loaderFile = File(binDir, loaderName)
+            for (soName in listOf("libproot-loader.so", "libprootloader.so")) {
+                val bundledLoader = File(nativeLibDir, soName)
+                if (bundledLoader.exists() && bundledLoader.length() > 0) {
+                    try {
+                        bundledLoader.copyTo(loaderFile, overwrite = true)
+                        loaderFile.setExecutable(true, false)
+                    } catch (_: Exception) {}
+                }
+            }
+            if (!loaderFile.exists() || loaderFile.length() == 0L) {
+                try {
+                    context.assets.open("bin/$loaderName").use { assetIn ->
+                        loaderFile.parentFile?.mkdirs()
+                        FileOutputStream(loaderFile).use { assetOut ->
+                            assetIn.copyTo(assetOut)
+                        }
+                        loaderFile.setExecutable(true, false)
+                    }
+                } catch (_: Exception) {}
+            }
+            try {
+                loaderFile.setExecutable(true, false)
+                loaderFile.setReadable(true, false)
+            } catch (_: Exception) {}
+        }
     }
 
     private suspend fun downloadRootfs(targetFile: File, listener: InstallProgressListener): Boolean {
@@ -385,13 +414,96 @@ class ArchLinuxInstaller(
         // Pre-create all critical directory trees
         File(rootfsDir, "etc/sudoers.d").mkdirs()
         File(rootfsDir, "run/systemd/resolve").mkdirs()
-        File(rootfsDir, "tmp").mkdirs()
+        File(rootfsDir, "tmp").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
         File(rootfsDir, "dev").mkdirs()
         File(rootfsDir, "proc").mkdirs()
         File(rootfsDir, "sys").mkdirs()
         File(rootfsDir, "home/antigravity/.vnc").mkdirs()
         File(rootfsDir, "usr/local/bin").mkdirs()
+        File(rootfsDir, "usr/sbin").mkdirs()
         File(rootfsDir, "opt/antigravity").mkdirs()
+        File(rootfsDir, "lib").mkdirs()
+        File(rootfsDir, "lib64").mkdirs()
+        File(rootfsDir, "bin").mkdirs()
+
+        // Configure policy-rc.d to prevent apt-get from trying to invoke systemd inside PRoot
+        val policyRc = File(rootfsDir, "usr/sbin/policy-rc.d")
+        safeWriteText(policyRc, "#!/bin/sh\nexit 101\n")
+        try { policyRc.setExecutable(true, false) } catch (_: Exception) {}
+
+        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists
+        val libLd = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
+        val lib64Ld = File(rootfsDir, "lib64/ld-linux-aarch64.so.1")
+        val candidateLd = listOf(
+            File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"),
+            File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1")
+        ).firstOrNull { it.exists() && it.length() > 0 }
+
+        if (candidateLd != null) {
+            if (!libLd.exists() || libLd.length() == 0L) {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        java.nio.file.Files.deleteIfExists(libLd.toPath())
+                        java.nio.file.Files.createSymbolicLink(libLd.toPath(), java.nio.file.Paths.get("/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"))
+                    } else {
+                        candidateLd.copyTo(libLd, overwrite = true)
+                    }
+                } catch (_: Exception) {
+                    try { candidateLd.copyTo(libLd, overwrite = true) } catch (_: Exception) {}
+                }
+            }
+            if (!lib64Ld.exists() || lib64Ld.length() == 0L) {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        java.nio.file.Files.deleteIfExists(lib64Ld.toPath())
+                        java.nio.file.Files.createSymbolicLink(lib64Ld.toPath(), java.nio.file.Paths.get("/lib/ld-linux-aarch64.so.1"))
+                    } else {
+                        candidateLd.copyTo(lib64Ld, overwrite = true)
+                    }
+                } catch (_: Exception) {
+                    try { candidateLd.copyTo(lib64Ld, overwrite = true) } catch (_: Exception) {}
+                }
+            }
+        }
+
+        // Ensure shells /bin/bash and /bin/sh exist
+        val usrBash = File(rootfsDir, "usr/bin/bash")
+        val binBash = File(rootfsDir, "bin/bash")
+        if (!binBash.exists() && usrBash.exists()) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    java.nio.file.Files.deleteIfExists(binBash.toPath())
+                    java.nio.file.Files.createSymbolicLink(binBash.toPath(), java.nio.file.Paths.get("/usr/bin/bash"))
+                } else {
+                    usrBash.copyTo(binBash, overwrite = true)
+                }
+            } catch (_: Exception) {
+                try { usrBash.copyTo(binBash, overwrite = true) } catch (_: Exception) {}
+            }
+        }
+        val binSh = File(rootfsDir, "bin/sh")
+        if (!binSh.exists()) {
+            val sourceSh = if (usrBash.exists()) usrBash else File(rootfsDir, "usr/bin/dash")
+            if (sourceSh.exists()) {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        java.nio.file.Files.deleteIfExists(binSh.toPath())
+                        java.nio.file.Files.createSymbolicLink(binSh.toPath(), java.nio.file.Paths.get(if (usrBash.exists()) "/usr/bin/bash" else "/usr/bin/dash"))
+                    } else {
+                        sourceSh.copyTo(binSh, overwrite = true)
+                    }
+                } catch (_: Exception) {
+                    try { sourceSh.copyTo(binSh, overwrite = true) } catch (_: Exception) {}
+                }
+            }
+        }
 
         // Configure DNS resolver (safely handles any broken symlink)
         val resolvConf = File(rootfsDir, "etc/resolv.conf")
@@ -434,16 +546,15 @@ class ArchLinuxInstaller(
         val vncHomeLog = File(rootfsDir, "home/antigravity/.vnc/desktop.log")
         safeWriteText(vncHomeLog, "[System] VNC desktop session logger initialized.\n")
 
-        // Create start-desktop script with live logging
+        // Create start-desktop script with reliable logging
         val startDesktop = File(rootfsDir, "usr/local/bin/start-desktop")
         safeWriteText(
             startDesktop,
             """
             #!/bin/bash
             LOG_FILE="/tmp/vncserver.log"
-            USER_LOG="/home/antigravity/.vnc/desktop.log"
             mkdir -p /home/antigravity/.vnc /tmp
-            exec > >(tee -a "${'$'}LOG_FILE" "${'$'}USER_LOG") 2>&1
+            exec >> "${'$'}LOG_FILE" 2>&1
             
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Antigravity Linux X11/VNC Server on DISPLAY=:1..."
             export DISPLAY=:1

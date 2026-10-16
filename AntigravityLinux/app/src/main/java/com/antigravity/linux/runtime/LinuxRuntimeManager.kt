@@ -211,11 +211,14 @@ class LinuxRuntimeManager(private val context: Context) {
         _desktopState.value = DesktopState.STARTING
         _statusMessage.value = "Starting Linux X11/VNC desktop session..."
 
-        val result = commandExecutor.executeInLinux("/usr/local/bin/start-desktop", asUser = "antigravity")
+        // Launch start-desktop concurrently
+        val desktopJob = scope.launch(Dispatchers.IO) {
+            commandExecutor.executeInLinux("/usr/local/bin/start-desktop", asUser = "antigravity", timeoutSeconds = 30)
+        }
 
-        // Wait up to 5 seconds for port 5901 to become open
+        // Wait up to 10 seconds for port 5901 to become open
         var attempts = 0
-        while (attempts < 10) {
+        while (attempts < 20) {
             kotlinx.coroutines.delay(500)
             if (isPortOpen("127.0.0.1", 5901)) {
                 _desktopState.value = DesktopState.RUNNING
@@ -233,7 +236,7 @@ class LinuxRuntimeManager(private val context: Context) {
         if (currentLogs.contains("not found", ignoreCase = true) || currentLogs.contains("Install Antigravity", ignoreCase = true)) {
             _statusMessage.value = "Desktop not installed. Tap 'Install Antigravity' to choose Desktop App or IDE."
         } else {
-            _statusMessage.value = "Desktop failed to start. Log: ${result.stderr.ifBlank { result.stdout }}"
+            _statusMessage.value = "Desktop failed to start: $currentLogs"
         }
         return@withContext false
     }
@@ -269,19 +272,26 @@ class LinuxRuntimeManager(private val context: Context) {
         _antigravityState.value = AntigravityState.STARTING
         _statusMessage.value = "Launching Antigravity Desktop on DISPLAY=:1..."
 
-        val result = commandExecutor.executeInLinux("/usr/local/bin/launch-antigravity", asUser = "antigravity")
-
-        kotlinx.coroutines.delay(2000)
-        val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity")
-        return@withContext if (pgrep.isSuccess && pgrep.stdout.isNotBlank()) {
-            _antigravityState.value = AntigravityState.RUNNING
-            _statusMessage.value = "Antigravity Desktop is running (PID ${pgrep.stdout.trim()})"
-            true
-        } else {
-            _antigravityState.value = AntigravityState.ERROR
-            _statusMessage.value = "Antigravity failed to launch: ${result.stderr.ifBlank { result.stdout }}"
-            false
+        // Launch in background
+        val launchJob = scope.launch(Dispatchers.IO) {
+            commandExecutor.executeInLinux("/usr/local/bin/launch-antigravity", asUser = "antigravity", timeoutSeconds = 30)
         }
+
+        var attempts = 0
+        while (attempts < 10) {
+            kotlinx.coroutines.delay(500)
+            val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity")
+            if (pgrep.isSuccess && pgrep.stdout.isNotBlank()) {
+                _antigravityState.value = AntigravityState.RUNNING
+                _statusMessage.value = "Antigravity Desktop is running (PID ${pgrep.stdout.trim()})"
+                return@withContext true
+            }
+            attempts++
+        }
+
+        _antigravityState.value = AntigravityState.ERROR
+        _statusMessage.value = "Antigravity failed to launch."
+        return@withContext false
     }
 
     suspend fun stopAntigravity(): Boolean = withContext(Dispatchers.IO) {
