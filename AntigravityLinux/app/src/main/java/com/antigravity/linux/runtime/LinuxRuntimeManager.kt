@@ -248,22 +248,14 @@ class LinuxRuntimeManager(private val context: Context) {
     }
 
     private fun calculateDirSize(dir: File): Long {
-        var size = 0L
-        val stack = ArrayDeque<File>()
-        stack.push(dir)
-
-        while (stack.isNotEmpty()) {
-            val current = stack.pop()
-            val files = current.listFiles() ?: continue
-            for (f in files) {
-                if (f.isDirectory) {
-                    stack.push(f)
-                } else {
-                    size += f.length()
-                }
-            }
+        if (!dir.exists()) return 0L
+        return try {
+            dir.walkTopDown()
+                .filter { it.isFile }
+                .fold(0L) { acc, file -> acc + file.length() }
+        } catch (_: Exception) {
+            0L
         }
-        return size
     }
 
     private suspend fun updateDiagnostics(cpuInfo: ArchitectureDetector.CpuInfo, rootfsExists: Boolean) {

@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.antigravity.linux.data.*
 import com.antigravity.linux.ui.theme.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     runtimeState: RuntimeState,
@@ -472,7 +473,7 @@ private fun InstallationProgressCard(progress: Int, statusMessage: String) {
             }
 
             LinearProgressIndicator(
-                progress = { progress / 100f },
+                progress = progress / 100f,
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
                 color = Violet40,
                 trackColor = SurfaceBorder

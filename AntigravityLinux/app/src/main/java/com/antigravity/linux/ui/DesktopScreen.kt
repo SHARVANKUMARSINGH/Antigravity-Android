@@ -42,6 +42,7 @@ import com.antigravity.linux.desktop.DesktopManager
 import com.antigravity.linux.desktop.KeySymbols
 import com.antigravity.linux.ui.theme.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DesktopScreen(
     desktopManager: DesktopManager,
@@ -470,7 +471,7 @@ fun DesktopScreen(
 
 private fun calculateDesktopCoords(
     screenOffset: Offset,
-    canvasSize: androidx.compose.ui.geometry.Size,
+    canvasSize: IntSize,
     bmpWidth: Int,
     bmpHeight: Int,
     fitToScreen: Boolean
@@ -478,13 +479,13 @@ private fun calculateDesktopCoords(
     if (!fitToScreen) {
         return Pair(screenOffset.x.toInt(), screenOffset.y.toInt())
     }
-    val scaleX = canvasSize.width / bmpWidth
-    val scaleY = canvasSize.height / bmpHeight
+    val scaleX = canvasSize.width.toFloat() / bmpWidth
+    val scaleY = canvasSize.height.toFloat() / bmpHeight
     val scale = minOf(scaleX, scaleY)
     val drawW = bmpWidth * scale
     val drawH = bmpHeight * scale
-    val offsetX = (canvasSize.width - drawW) / 2
-    val offsetY = (canvasSize.height - drawH) / 2
+    val offsetX = (canvasSize.width.toFloat() - drawW) / 2f
+    val offsetY = (canvasSize.height.toFloat() - drawH) / 2f
 
     val relativeX = ((screenOffset.x - offsetX) / scale).toInt().coerceIn(0, bmpWidth - 1)
     val relativeY = ((screenOffset.y - offsetY) / scale).toInt().coerceIn(0, bmpHeight - 1)

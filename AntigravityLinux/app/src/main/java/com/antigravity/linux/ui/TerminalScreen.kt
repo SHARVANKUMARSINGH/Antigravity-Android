@@ -27,6 +27,7 @@ import com.antigravity.linux.terminal.TerminalSession
 import com.antigravity.linux.ui.theme.*
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalScreen(
     terminalSession: TerminalSession,
