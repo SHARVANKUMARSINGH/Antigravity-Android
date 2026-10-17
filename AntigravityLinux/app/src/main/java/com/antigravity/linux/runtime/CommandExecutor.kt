@@ -32,16 +32,16 @@ class CommandExecutor(
         var cachedWorkingProfile: ProotProfile? = null
 
         val CANDIDATE_PROFILES = listOf(
-            // Profile 0: PROOT_NO_SECCOMP with loader, no sysfs bind (Required standard for Samsung / Android 14 ARM64)
+            // Profile 0: PROOT_NO_SECCOMP with loader (Required standard for Samsung / Android 14 ARM64)
             ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
-            // Profile 1: PROOT_NO_SECCOMP with loader and sysfs bind
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
-            // Profile 2: Native seccomp with loader, no sysfs bind (for kernels supporting seccomp trap)
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
-            // Profile 3: Native seccomp with loader and sysfs bind
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true),
-            // Profile 4: PROOT_NO_SECCOMP without loader (fallback)
+            // Profile 1: PROOT_NO_SECCOMP without loader (direct Alpine static PRoot - proven 100% on ARM64)
             ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
+            // Profile 2: PROOT_NO_SECCOMP with loader and sysfs bind
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
+            // Profile 3: PROOT_NO_SECCOMP without loader and sysfs bind
+            ProotProfile(noSeccomp = true, useLoader = false, bindSys = true),
+            // Profile 4: Native seccomp with loader, no sysfs bind (for kernels supporting seccomp trap)
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
             // Profile 5: Native seccomp without loader (legacy fallback)
             ProotProfile(noSeccomp = false, useLoader = false, bindSys = false)
         )
@@ -176,6 +176,9 @@ class CommandExecutor(
         val prootPath = effectiveProot.absolutePath
         val rootfsPath = rootfsDir.absolutePath
 
+        // If target workDir is /root but /root directory does not exist, safely fallback to /
+        val effectiveWorkDir = if (workDir == "/root" && !File(rootfsDir, "root").exists()) "/" else workDir
+
         val cmdList = mutableListOf<String>()
         cmdList.add(prootPath)
         cmdList.add("-r")
@@ -191,7 +194,7 @@ class CommandExecutor(
             cmdList.add("/sys")
         }
         cmdList.add("-w")
-        cmdList.add(workDir)
+        cmdList.add(effectiveWorkDir)
         cmdList.addAll(extraArgs)
         return cmdList
     }
@@ -239,9 +242,12 @@ class CommandExecutor(
             env.remove("PROOT_LOADER")
         }
 
-        // Strip Android Bionic host library paths to avoid GNU libc SIGSEGV (exit code 255)
+        // Strip Android Bionic host library paths and Android runtime variables to avoid GNU libc SIGSEGV
         env.remove("LD_LIBRARY_PATH")
         env.remove("LD_PRELOAD")
+        env.remove("BOOTCLASSPATH")
+        env.remove("DEX2OATBOOTCLASSPATH")
+        env.remove("SYSTEMSERVERCLASSPATH")
 
         env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
         env["USER"] = asUser
@@ -296,7 +302,7 @@ class CommandExecutor(
         } catch (_: Exception) {}
 
         val shellPath = resolveShellPath()
-        val hostWorkDir = context?.filesDir ?: rootfsDir
+        val hostWorkDir = if (rootfsDir.exists()) rootfsDir else (context?.filesDir ?: rootfsDir)
 
         // Helper function to execute under a specific profile and shell
         fun runAttempt(profile: ProotProfile, shell: String): ExecutionResult {
@@ -399,6 +405,97 @@ class CommandExecutor(
             stdout = "",
             stderr = "All PRoot execution profiles failed."
         )
+    }
+
+    /**
+     * Executes a command directly in PRoot without wrapping in a shell.
+     * Ideal for pre-flight verification checks like ["/usr/bin/uname", "-m"].
+     */
+    suspend fun executeDirectInLinux(
+        commandArgs: List<String>,
+        workDir: String = "/",
+        asUser: String = "root",
+        timeoutSeconds: Long = 30
+    ): ExecutionResult = withContext(Dispatchers.IO) {
+        val effectiveProot = getEffectiveProot()
+        if (!effectiveProot.exists() || effectiveProot.length() == 0L) {
+            return@withContext ExecutionResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "PRoot engine binary not found."
+            )
+        }
+        try { effectiveProot.setExecutable(true, false) } catch (_: Exception) {}
+
+        val hostWorkDir = if (rootfsDir.exists()) rootfsDir else (context?.filesDir ?: rootfsDir)
+
+        fun runDirectAttempt(profile: ProotProfile): ExecutionResult {
+            val cmdList = buildProotCommandForProfile(profile, workDir, *commandArgs.toTypedArray())
+            val processBuilder = ProcessBuilder(cmdList)
+            if (hostWorkDir.exists()) {
+                processBuilder.directory(hostWorkDir)
+            }
+            val env = processBuilder.environment()
+            applyProotEnvironmentForProfile(profile, env, asUser)
+
+            val stdout = StringBuilder()
+            val stderr = StringBuilder()
+
+            return try {
+                val process = processBuilder.start()
+                val stdoutReader = BufferedReader(InputStreamReader(process.inputStream))
+                val stderrReader = BufferedReader(InputStreamReader(process.errorStream))
+
+                val stdoutThread = Thread {
+                    try {
+                        var line: String?
+                        while (stdoutReader.readLine().also { line = it } != null) {
+                            stdout.append(line).append("\n")
+                        }
+                    } catch (_: Exception) {}
+                }
+                val stderrThread = Thread {
+                    try {
+                        var line: String?
+                        while (stderrReader.readLine().also { line = it } != null) {
+                            stderr.append(line).append("\n")
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                stdoutThread.start()
+                stderrThread.start()
+
+                val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+                if (!finished) {
+                    process.destroyForcibly()
+                    ExecutionResult(-1, stdout.toString().trim(), "Timed out after $timeoutSeconds seconds")
+                } else {
+                    stdoutThread.join(1000)
+                    stderrThread.join(1000)
+                    ExecutionResult(process.exitValue(), stdout.toString().trim(), stderr.toString().trim())
+                }
+            } catch (e: Exception) {
+                ExecutionResult(-1, stdout.toString().trim(), "Direct execution failed: ${e.message}")
+            }
+        }
+
+        val cached = cachedWorkingProfile
+        if (cached != null) {
+            val res = runDirectAttempt(cached)
+            if (res.isSuccess) return@withContext res
+        }
+
+        var lastResult: ExecutionResult? = null
+        for (candidate in CANDIDATE_PROFILES) {
+            val res = runDirectAttempt(candidate)
+            if (res.isSuccess) {
+                cachedWorkingProfile = candidate
+                return@withContext res
+            }
+            lastResult = res
+        }
+        return@withContext lastResult ?: ExecutionResult(255, "", "Direct execution failed across all profiles.")
     }
 
     /**

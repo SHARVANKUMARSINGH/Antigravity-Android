@@ -11,8 +11,8 @@ android {
         applicationId = "com.antigravity.linux"
         minSdk = 26
         targetSdk = 28
-        versionCode = 18
-        versionName = "1.0.18"
+        versionCode = 20
+        versionName = "1.0.20"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

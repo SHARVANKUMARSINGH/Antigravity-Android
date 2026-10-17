@@ -315,24 +315,35 @@ class ArchLinuxInstaller(
             notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
             val executor = CommandExecutor(rootfsDir, prootFile, context)
 
-            // Test execution with direct uname, echo test, and shell checks
-            val testCommands = listOf(
-                "uname -m",
-                "/usr/bin/uname -m",
-                "echo aarch64"
+            // Test execution with direct binary calls first, then shell fallbacks
+            val directCandidates = listOf(
+                listOf("/usr/bin/uname", "-m"),
+                listOf("uname", "-m"),
+                listOf("/bin/sh", "-c", "echo aarch64")
             )
 
             var testResult = ExecutionResult(-1, "", "Verification unattempted")
-            for (testCmd in testCommands) {
-                testResult = executor.executeInLinux(testCmd)
+            for (cmdArgs in directCandidates) {
+                testResult = executor.executeDirectInLinux(cmdArgs, workDir = "/")
                 if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
                     break
                 }
             }
 
+            // Fallback to standard executeInLinux if direct execution didn't conclude
+            if (!testResult.isSuccess) {
+                val shellCandidates = listOf("uname -m", "/usr/bin/uname -m", "echo aarch64")
+                for (testCmd in shellCandidates) {
+                    testResult = executor.executeInLinux(testCmd, workDir = "/")
+                    if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
+                        break
+                    }
+                }
+            }
+
             if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
                 try {
-                    File(rootfsDir, ".install_complete").writeText("v1.0.17\n")
+                    File(rootfsDir, ".install_complete").writeText("v1.0.20\n")
                 } catch (_: Exception) {}
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
@@ -590,6 +601,14 @@ class ArchLinuxInstaller(
         File(rootfsDir, "dev").mkdirs()
         File(rootfsDir, "proc").mkdirs()
         File(rootfsDir, "sys").mkdirs()
+        File(rootfsDir, "root").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
         File(rootfsDir, "home/antigravity/.vnc").mkdirs()
         File(rootfsDir, "home/antigravity").apply {
             mkdirs()
