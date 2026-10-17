@@ -440,9 +440,31 @@ class ArchLinuxInstaller(
         File(rootfsDir, "proc").mkdirs()
         File(rootfsDir, "sys").mkdirs()
         File(rootfsDir, "home/antigravity/.vnc").mkdirs()
-        File(rootfsDir, "usr/local/bin").mkdirs()
+        File(rootfsDir, "home/antigravity").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
+        File(rootfsDir, "usr/local/bin").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
         File(rootfsDir, "usr/sbin").mkdirs()
-        File(rootfsDir, "opt/antigravity").mkdirs()
+        File(rootfsDir, "opt/antigravity").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
         File(rootfsDir, "lib").mkdirs()
         File(rootfsDir, "lib64").mkdirs()
         File(rootfsDir, "bin").mkdirs()
@@ -627,8 +649,11 @@ class ArchLinuxInstaller(
             """
             #!/bin/bash
             set -e
-            mkdir -p /opt/antigravity /etc/apt/apt.conf.d
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
+            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
+            echo 'Dir::Cache::pkgcache "";' > /etc/apt/apt.conf.d/01autoclean
+            echo 'Dir::Cache::srcpkgcache "";' >> /etc/apt/apt.conf.d/01autoclean
 
             # Generate launcher script
             cat << 'EOF' > /opt/antigravity/antigravity
@@ -639,6 +664,9 @@ class ArchLinuxInstaller(
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop App" > /opt/antigravity/.installed_mode
+
+            echo "[*] Configuring package manager..."
+            dpkg --configure -a || true
 
             echo "[*] Updating package repositories..."
             apt-get update -y || true
@@ -659,8 +687,11 @@ class ArchLinuxInstaller(
             """
             #!/bin/bash
             set -e
-            mkdir -p /opt/antigravity /etc/apt/apt.conf.d
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
+            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
+            echo 'Dir::Cache::pkgcache "";' > /etc/apt/apt.conf.d/01autoclean
+            echo 'Dir::Cache::srcpkgcache "";' >> /etc/apt/apt.conf.d/01autoclean
 
             # Generate launcher script
             cat << 'EOF' > /opt/antigravity/antigravity
@@ -671,6 +702,9 @@ class ArchLinuxInstaller(
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop IDE" > /opt/antigravity/.installed_mode
+
+            echo "[*] Configuring package manager..."
+            dpkg --configure -a || true
 
             echo "[*] Updating package repositories..."
             apt-get update -y || true
@@ -705,10 +739,12 @@ class ArchLinuxInstaller(
             export DISPLAY=:1
             export HOME=/home/antigravity
             export USER=antigravity
-            
+
             ANTIGRAVITY_BIN="/opt/antigravity/antigravity"
-            if [ -x "${'$'}ANTIGRAVITY_BIN" ]; then
-                exec "${'$'}ANTIGRAVITY_BIN" "$@" > /home/antigravity/.antigravity.log 2>&1 &
+            if [ -f "${'$'}ANTIGRAVITY_BIN" ]; then
+                chmod +x "${'$'}ANTIGRAVITY_BIN" 2>/dev/null
+                exec /bin/bash "${'$'}ANTIGRAVITY_BIN" "$@" > /home/antigravity/.antigravity.log 2>&1 &
+                echo "[✓] Antigravity launched on DISPLAY=:1"
             else
                 echo "Antigravity binary not found at ${'$'}ANTIGRAVITY_BIN" >&2
                 exit 1

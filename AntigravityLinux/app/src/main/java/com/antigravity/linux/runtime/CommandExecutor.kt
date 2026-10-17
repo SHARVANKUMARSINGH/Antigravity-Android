@@ -32,18 +32,18 @@ class CommandExecutor(
         var cachedWorkingProfile: ProotProfile? = null
 
         val CANDIDATE_PROFILES = listOf(
-            // Profile 0: Modern Android 14+ (PROOT_NO_SECCOMP=1, useLoader=true, no sysfs bind)
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
-            // Profile 1: Android native seccomp with loader, no sysfs bind
+            // Profile 0: Native seccomp with loader, no sysfs bind (Universal default for modern Android)
             ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
-            // Profile 2: Android 14 without loader
-            ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
-            // Profile 3: Native seccomp without loader
+            // Profile 1: Native seccomp without loader, no sysfs bind
             ProotProfile(noSeccomp = false, useLoader = false, bindSys = false),
-            // Profile 4: Full bindings with PROOT_NO_SECCOMP
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
-            // Profile 5: Full bindings with native seccomp
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true)
+            // Profile 2: PROOT_NO_SECCOMP without loader (for kernels restricting seccomp filter)
+            ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
+            // Profile 3: PROOT_NO_SECCOMP with loader
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
+            // Profile 4: Full bindings with native seccomp
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true),
+            // Profile 5: Full bindings with PROOT_NO_SECCOMP
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true)
         )
     }
 
@@ -162,10 +162,10 @@ class CommandExecutor(
 
         val cmdList = mutableListOf<String>()
         cmdList.add(prootPath)
-        cmdList.add("--link2symlink")
-        cmdList.add("-0")
         cmdList.add("-r")
         cmdList.add(rootfsPath)
+        cmdList.add("-0")
+        cmdList.add("--link2symlink")
         cmdList.add("-b")
         cmdList.add("/dev")
         cmdList.add("-b")
