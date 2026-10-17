@@ -15,11 +15,37 @@ data class ExecutionResult(
     val isSuccess: Boolean get() = exitCode == 0
 }
 
+data class ProotProfile(
+    val noSeccomp: Boolean,
+    val useLoader: Boolean,
+    val bindSys: Boolean
+)
+
 class CommandExecutor(
     private val rootfsDir: File,
     private val prootBin: File,
     private val context: android.content.Context? = null
 ) {
+
+    companion object {
+        @Volatile
+        var cachedWorkingProfile: ProotProfile? = null
+
+        val CANDIDATE_PROFILES = listOf(
+            // Profile 0: Modern Android 14+ (PROOT_NO_SECCOMP=1, useLoader=true, no sysfs bind)
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
+            // Profile 1: Android native seccomp with loader, no sysfs bind
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
+            // Profile 2: Android 14 without loader
+            ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
+            // Profile 3: Native seccomp without loader
+            ProotProfile(noSeccomp = false, useLoader = false, bindSys = false),
+            // Profile 4: Full bindings with PROOT_NO_SECCOMP
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
+            // Profile 5: Full bindings with native seccomp
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true)
+        )
+    }
 
     /**
      * Resolves the executable PRoot binary.
@@ -104,19 +130,29 @@ class CommandExecutor(
      */
     fun resolveShellPath(): String {
         return when {
-            File(rootfsDir, "usr/bin/bash").exists() -> "/usr/bin/bash"
             File(rootfsDir, "bin/bash").exists() -> "/bin/bash"
-            File(rootfsDir, "usr/bin/dash").exists() -> "/usr/bin/dash"
+            File(rootfsDir, "usr/bin/bash").exists() -> "/usr/bin/bash"
             File(rootfsDir, "bin/sh").exists() -> "/bin/sh"
             File(rootfsDir, "usr/bin/sh").exists() -> "/usr/bin/sh"
+            File(rootfsDir, "usr/bin/dash").exists() -> "/usr/bin/dash"
             else -> "/bin/sh"
         }
     }
 
     /**
-     * Builds the PRoot command-line invocation list with all Android-compatible bindings.
+     * Builds the PRoot command-line invocation list using the active or default profile.
      */
     fun buildProotCommand(
+        workDir: String = "/root",
+        vararg extraArgs: String
+    ): List<String> = buildProotCommandForProfile(
+        profile = cachedWorkingProfile ?: CANDIDATE_PROFILES.first(),
+        workDir = workDir,
+        extraArgs = extraArgs
+    )
+
+    fun buildProotCommandForProfile(
+        profile: ProotProfile,
         workDir: String = "/root",
         vararg extraArgs: String
     ): List<String> {
@@ -134,8 +170,10 @@ class CommandExecutor(
         cmdList.add("/dev")
         cmdList.add("-b")
         cmdList.add("/proc")
-        cmdList.add("-b")
-        cmdList.add("/sys")
+        if (profile.bindSys) {
+            cmdList.add("-b")
+            cmdList.add("/sys")
+        }
         cmdList.add("-w")
         cmdList.add(workDir)
         cmdList.addAll(extraArgs)
@@ -149,29 +187,52 @@ class CommandExecutor(
         env: MutableMap<String, String>,
         asUser: String = "root",
         extraVars: Map<String, String> = emptyMap()
+    ) = applyProotEnvironmentForProfile(
+        profile = cachedWorkingProfile ?: CANDIDATE_PROFILES.first(),
+        env = env,
+        asUser = asUser,
+        extraVars = extraVars
+    )
+
+    fun applyProotEnvironmentForProfile(
+        profile: ProotProfile,
+        env: MutableMap<String, String>,
+        asUser: String = "root",
+        extraVars: Map<String, String> = emptyMap()
     ) {
         val tmpDir = getProotTmpDir()
         env["PROOT_TMP_DIR"] = tmpDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
-        // Do not force PROOT_NO_SECCOMP; pure ptrace on AArch64 Android causes signal 11 on execve.
-        // PRoot auto-detects and uses native seccomp filter on Android 10+ safely.
-        env.remove("PROOT_NO_SECCOMP")
         env["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
         env["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
 
-        val effectiveLoader = getEffectiveLoader()
-        if (effectiveLoader != null && effectiveLoader.exists()) {
-            env["PROOT_LOADER"] = effectiveLoader.absolutePath
+        if (profile.noSeccomp) {
+            env["PROOT_NO_SECCOMP"] = "1"
+        } else {
+            env.remove("PROOT_NO_SECCOMP")
         }
 
-        // Prevent host preloaded libraries from breaking guest executables
+        if (profile.useLoader) {
+            val effectiveLoader = getEffectiveLoader()
+            if (effectiveLoader != null && effectiveLoader.exists()) {
+                env["PROOT_LOADER"] = effectiveLoader.absolutePath
+            } else {
+                env.remove("PROOT_LOADER")
+            }
+        } else {
+            env.remove("PROOT_LOADER")
+        }
+
+        // Strip Android Bionic host library paths to avoid GNU libc SIGSEGV (exit code 255)
+        env.remove("LD_LIBRARY_PATH")
         env.remove("LD_PRELOAD")
 
         env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
         env["USER"] = asUser
         env["TERM"] = "xterm-256color"
         env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        env["LANG"] = "en_US.UTF-8"
+        env["LANG"] = "C.UTF-8"
+        env["SHELL"] = "/bin/bash"
         env["DISPLAY"] = ":1"
         env.putAll(extraVars)
     }
@@ -195,7 +256,7 @@ class CommandExecutor(
     )
 
     /**
-     * Executes a command inside the Linux rootfs using PRoot with real-time output callback.
+     * Executes a command inside the Linux rootfs using PRoot with real-time output callback and adaptive profile discovery.
      */
     suspend fun executeInLinuxStream(
         command: String,
@@ -219,101 +280,108 @@ class CommandExecutor(
         } catch (_: Exception) {}
 
         val shellPath = resolveShellPath()
-        val cmdList = buildProotCommand(workDir, shellPath, "-c", command)
-
-        val processBuilder = ProcessBuilder(cmdList)
         val hostWorkDir = context?.filesDir ?: rootfsDir
-        if (hostWorkDir.exists()) {
-            processBuilder.directory(hostWorkDir)
-        }
-        val env = processBuilder.environment()
-        applyProotEnvironment(env, asUser, envVars)
 
-        try {
-            val process = processBuilder.start()
+        // Helper function to execute under a specific profile and shell
+        fun runAttempt(profile: ProotProfile, shell: String): ExecutionResult {
+            val cmdList = buildProotCommandForProfile(profile, workDir, shell, "-c", command)
+            val processBuilder = ProcessBuilder(cmdList)
+            if (hostWorkDir.exists()) {
+                processBuilder.directory(hostWorkDir)
+            }
+            val env = processBuilder.environment()
+            applyProotEnvironmentForProfile(profile, env, asUser, envVars)
+
             val stdout = StringBuilder()
             val stderr = StringBuilder()
 
-            val stdoutReader = BufferedReader(InputStreamReader(process.inputStream))
-            val stderrReader = BufferedReader(InputStreamReader(process.errorStream))
+            return try {
+                val process = processBuilder.start()
+                val stdoutReader = BufferedReader(InputStreamReader(process.inputStream))
+                val stderrReader = BufferedReader(InputStreamReader(process.errorStream))
 
-            val stdoutThread = Thread {
-                try {
-                    var line: String?
-                    while (stdoutReader.readLine().also { line = it } != null) {
-                        stdout.append(line).append("\n")
-                        line?.let { onLine(it) }
-                    }
-                } catch (_: Exception) {}
-            }
-            val stderrThread = Thread {
-                try {
-                    var line: String?
-                    while (stderrReader.readLine().also { line = it } != null) {
-                        stderr.append(line).append("\n")
-                        line?.let { onLine(it) }
-                    }
-                } catch (_: Exception) {}
-            }
+                val stdoutThread = Thread {
+                    try {
+                        var line: String?
+                        while (stdoutReader.readLine().also { line = it } != null) {
+                            stdout.append(line).append("\n")
+                            line?.let { onLine(it) }
+                        }
+                    } catch (_: Exception) {}
+                }
+                val stderrThread = Thread {
+                    try {
+                        var line: String?
+                        while (stderrReader.readLine().also { line = it } != null) {
+                            stderr.append(line).append("\n")
+                            line?.let { onLine(it) }
+                        }
+                    } catch (_: Exception) {}
+                }
 
-            stdoutThread.start()
-            stderrThread.start()
+                stdoutThread.start()
+                stderrThread.start()
 
-            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                return@withContext ExecutionResult(
+                val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+                if (!finished) {
+                    process.destroyForcibly()
+                    return ExecutionResult(
+                        exitCode = -1,
+                        stdout = stdout.toString().trim(),
+                        stderr = "Execution timed out after $timeoutSeconds seconds"
+                    )
+                }
+
+                stdoutThread.join(1000)
+                stderrThread.join(1000)
+
+                ExecutionResult(
+                    exitCode = process.exitValue(),
+                    stdout = stdout.toString().trim(),
+                    stderr = stderr.toString().trim()
+                )
+            } catch (e: Exception) {
+                ExecutionResult(
                     exitCode = -1,
-                    stdout = stdout.toString(),
-                    stderr = "Execution timed out after $timeoutSeconds seconds"
+                    stdout = stdout.toString().trim(),
+                    stderr = "Process execution failed: ${e.message}"
                 )
             }
-
-            stdoutThread.join(1000)
-            stderrThread.join(1000)
-
-            val exitVal = process.exitValue()
-            if (exitVal != 0 && shellPath != "/bin/sh") {
-                // Secondary fallback attempt using /bin/sh directly
-                try {
-                    val fallbackList = buildProotCommand(workDir, "/bin/sh", "-c", command)
-                    val fallbackBuilder = ProcessBuilder(fallbackList)
-                    if (hostWorkDir.exists()) {
-                        fallbackBuilder.directory(hostWorkDir)
-                    }
-                    val fallbackEnv = fallbackBuilder.environment()
-                    applyProotEnvironment(fallbackEnv, asUser, envVars)
-                    val fallbackProc = fallbackBuilder.start()
-                    val fStdout = StringBuilder()
-                    val fStderr = StringBuilder()
-                    val t1 = Thread { try { fallbackProc.inputStream.bufferedReader().forEachLine { fStdout.append(it).append("\n"); onLine(it) } } catch (_: Exception) {} }
-                    val t2 = Thread { try { fallbackProc.errorStream.bufferedReader().forEachLine { fStderr.append(it).append("\n"); onLine(it) } } catch (_: Exception) {} }
-                    t1.start(); t2.start()
-                    if (fallbackProc.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-                        t1.join(500); t2.join(500)
-                        if (fallbackProc.exitValue() == 0) {
-                            return@withContext ExecutionResult(
-                                exitCode = 0,
-                                stdout = fStdout.toString().trim(),
-                                stderr = fStderr.toString().trim()
-                            )
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-
-            ExecutionResult(
-                exitCode = exitVal,
-                stdout = stdout.toString().trim(),
-                stderr = stderr.toString().trim()
-            )
-        } catch (e: Exception) {
-            ExecutionResult(
-                exitCode = -1,
-                stdout = "",
-                stderr = "Process execution failed: ${e.message}"
-            )
         }
+
+        // 1. If we already found a working profile, attempt it first
+        val cached = cachedWorkingProfile
+        if (cached != null) {
+            val result = runAttempt(cached, shellPath)
+            if (result.isSuccess || (result.exitCode in 1..254 && result.exitCode != 127)) {
+                return@withContext result
+            }
+            // If exit code is 255 (SIGSEGV/failure), fall through to profile rediscovery
+        }
+
+        // 2. Discover working profile across candidate profiles
+        var lastResult: ExecutionResult? = null
+        for (candidate in CANDIDATE_PROFILES) {
+            val result = runAttempt(candidate, shellPath)
+            if (result.isSuccess) {
+                cachedWorkingProfile = candidate
+                return@withContext result
+            }
+            if (shellPath != "/bin/sh") {
+                val shResult = runAttempt(candidate, "/bin/sh")
+                if (shResult.isSuccess) {
+                    cachedWorkingProfile = candidate
+                    return@withContext shResult
+                }
+            }
+            lastResult = result
+        }
+
+        return@withContext lastResult ?: ExecutionResult(
+            exitCode = 255,
+            stdout = "",
+            stderr = "All PRoot execution profiles failed."
+        )
     }
 
     /**
@@ -368,8 +436,9 @@ class CommandExecutor(
             effectiveProot.setExecutable(true, false)
         } catch (_: Exception) {}
 
+        val profile = cachedWorkingProfile ?: CANDIDATE_PROFILES.first()
         val shellPath = resolveShellPath()
-        val cmdList = buildProotCommand(workDir, shellPath, "-l")
+        val cmdList = buildProotCommandForProfile(profile, workDir, shellPath, "-l")
 
         val processBuilder = ProcessBuilder(cmdList)
         val hostWorkDir = context?.filesDir ?: rootfsDir
@@ -377,7 +446,7 @@ class CommandExecutor(
             processBuilder.directory(hostWorkDir)
         }
         val env = processBuilder.environment()
-        applyProotEnvironment(env, asUser, emptyMap())
+        applyProotEnvironmentForProfile(profile, env, asUser, emptyMap())
 
         return processBuilder.start()
     }

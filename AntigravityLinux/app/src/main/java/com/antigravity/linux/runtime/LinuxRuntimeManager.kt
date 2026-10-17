@@ -193,8 +193,8 @@ class LinuxRuntimeManager(private val context: Context) {
             }
             true
         } else {
-            _antigravityState.value = AntigravityState.ERROR
-            val err = result.stderr.ifBlank { result.stdout }
+            _antigravityState.value = AntigravityState.NOT_INSTALLED
+            val err = result.stderr.ifBlank { result.stdout }.ifBlank { "Exit code ${result.exitCode}" }
             withContext(Dispatchers.Main) {
                 listener.onError("Setup", "Installation failed: $err")
             }

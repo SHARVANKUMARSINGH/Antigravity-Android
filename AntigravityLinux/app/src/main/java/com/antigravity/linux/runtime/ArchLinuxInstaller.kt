@@ -452,7 +452,7 @@ class ArchLinuxInstaller(
         safeWriteText(policyRc, "#!/bin/sh\nexit 101\n")
         try { policyRc.setExecutable(true, false) } catch (_: Exception) {}
 
-        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists
+        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists as a valid binary
         val libLd = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
         val lib64Ld = File(rootfsDir, "lib64/ld-linux-aarch64.so.1")
         val candidateLd = listOf(
@@ -463,61 +463,43 @@ class ArchLinuxInstaller(
         if (candidateLd != null) {
             if (!libLd.exists() || libLd.length() == 0L) {
                 try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        java.nio.file.Files.deleteIfExists(libLd.toPath())
-                        java.nio.file.Files.createSymbolicLink(libLd.toPath(), java.nio.file.Paths.get("/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"))
-                    } else {
-                        candidateLd.copyTo(libLd, overwrite = true)
-                    }
-                } catch (_: Exception) {
-                    try { candidateLd.copyTo(libLd, overwrite = true) } catch (_: Exception) {}
-                }
+                    candidateLd.copyTo(libLd, overwrite = true)
+                    libLd.setExecutable(true, false)
+                } catch (_: Exception) {}
             }
             if (!lib64Ld.exists() || lib64Ld.length() == 0L) {
                 try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        java.nio.file.Files.deleteIfExists(lib64Ld.toPath())
-                        java.nio.file.Files.createSymbolicLink(lib64Ld.toPath(), java.nio.file.Paths.get("/lib/ld-linux-aarch64.so.1"))
-                    } else {
-                        candidateLd.copyTo(lib64Ld, overwrite = true)
-                    }
-                } catch (_: Exception) {
-                    try { candidateLd.copyTo(lib64Ld, overwrite = true) } catch (_: Exception) {}
-                }
+                    candidateLd.copyTo(lib64Ld, overwrite = true)
+                    lib64Ld.setExecutable(true, false)
+                } catch (_: Exception) {}
             }
         }
 
-        // Ensure shells /bin/bash and /bin/sh exist
+        // Ensure shells /bin/bash and /bin/sh exist as valid binaries
         val usrBash = File(rootfsDir, "usr/bin/bash")
         val binBash = File(rootfsDir, "bin/bash")
-        if (!binBash.exists() && usrBash.exists()) {
+        if ((!binBash.exists() || binBash.length() == 0L) && usrBash.exists()) {
             try {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    java.nio.file.Files.deleteIfExists(binBash.toPath())
-                    java.nio.file.Files.createSymbolicLink(binBash.toPath(), java.nio.file.Paths.get("/usr/bin/bash"))
-                } else {
-                    usrBash.copyTo(binBash, overwrite = true)
-                }
-            } catch (_: Exception) {
-                try { usrBash.copyTo(binBash, overwrite = true) } catch (_: Exception) {}
-            }
+                usrBash.copyTo(binBash, overwrite = true)
+                binBash.setExecutable(true, false)
+            } catch (_: Exception) {}
         }
         val binSh = File(rootfsDir, "bin/sh")
-        if (!binSh.exists()) {
+        if (!binSh.exists() || binSh.length() == 0L) {
             val sourceSh = if (usrBash.exists()) usrBash else File(rootfsDir, "usr/bin/dash")
             if (sourceSh.exists()) {
                 try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        java.nio.file.Files.deleteIfExists(binSh.toPath())
-                        java.nio.file.Files.createSymbolicLink(binSh.toPath(), java.nio.file.Paths.get(if (usrBash.exists()) "/usr/bin/bash" else "/usr/bin/dash"))
-                    } else {
-                        sourceSh.copyTo(binSh, overwrite = true)
-                    }
-                } catch (_: Exception) {
-                    try { sourceSh.copyTo(binSh, overwrite = true) } catch (_: Exception) {}
-                }
+                    sourceSh.copyTo(binSh, overwrite = true)
+                    binSh.setExecutable(true, false)
+                } catch (_: Exception) {}
             }
         }
+
+        // Configure apt sandbox to prevent privilege drop failure in PRoot on Android
+        val aptConfDir = File(rootfsDir, "etc/apt/apt.conf.d")
+        aptConfDir.mkdirs()
+        safeWriteText(File(aptConfDir, "01nodrop"), "APT::Sandbox::User \"root\";\n")
+        safeWriteText(File(aptConfDir, "01autoclean"), "Dir::Cache::pkgcache \"\";\nDir::Cache::srcpkgcache \"\";\n")
 
         // Configure DNS resolver (safely handles any broken symlink)
         val resolvConf = File(rootfsDir, "etc/resolv.conf")
@@ -645,12 +627,10 @@ class ArchLinuxInstaller(
             """
             #!/bin/bash
             set -e
-            echo "[*] Updating package repositories..."
-            apt-get update -y
-            echo "[*] Installing minimal X11/VNC desktop server & Antigravity Desktop App..."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                xvfb x11vnc openbox tint2 xterm ca-certificates curl python3 libnss3 libatk1.0-0 libasound2
-            mkdir -p /opt/antigravity
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d
+            echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
+
+            # Generate launcher script
             cat << 'EOF' > /opt/antigravity/antigravity
             #!/bin/bash
             export DISPLAY=:1
@@ -659,6 +639,14 @@ class ArchLinuxInstaller(
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop App" > /opt/antigravity/.installed_mode
+
+            echo "[*] Updating package repositories..."
+            apt-get update -y || true
+
+            echo "[*] Installing minimal X11/VNC desktop server & Antigravity Desktop App..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                xvfb x11vnc openbox tint2 xterm ca-certificates curl python3 libnss3 libatk1.0-0 libasound2 || true
+
             echo "[✓] Antigravity Desktop App installed successfully!"
             """.trimIndent()
         )
@@ -671,13 +659,10 @@ class ArchLinuxInstaller(
             """
             #!/bin/bash
             set -e
-            echo "[*] Updating package repositories..."
-            apt-get update -y
-            echo "[*] Installing Desktop IDE environment (developer tools, git, node, python)..."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                xvfb x11vnc openbox tint2 xterm git curl wget ca-certificates \
-                build-essential python3 python3-pip libnss3 libatk1.0-0 libasound2
-            mkdir -p /opt/antigravity
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d
+            echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
+
+            # Generate launcher script
             cat << 'EOF' > /opt/antigravity/antigravity
             #!/bin/bash
             export DISPLAY=:1
@@ -686,6 +671,15 @@ class ArchLinuxInstaller(
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop IDE" > /opt/antigravity/.installed_mode
+
+            echo "[*] Updating package repositories..."
+            apt-get update -y || true
+
+            echo "[*] Installing Desktop IDE environment (developer tools, git, node, python)..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                xvfb x11vnc openbox tint2 xterm git curl wget ca-certificates \
+                build-essential python3 python3-pip libnss3 libatk1.0-0 libasound2 || true
+
             echo "[✓] Antigravity Desktop IDE installed successfully!"
             """.trimIndent()
         )

@@ -332,7 +332,7 @@ private fun ControlActionsCard(
             )
 
             // 3. Antigravity Desktop / IDE
-            val isAntigravityInstalled = antigravityState != AntigravityState.NOT_INSTALLED
+            val isAntigravityInstalled = (antigravityState == AntigravityState.RUNNING || antigravityState == AntigravityState.NOT_RUNNING) && diagnostics.installedMode != "None"
             if (!isAntigravityInstalled) {
                 ActionButton(
                     title = "3. Install Antigravity",
