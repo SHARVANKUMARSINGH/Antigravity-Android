@@ -166,15 +166,40 @@ class ArchLinuxInstaller(
             } catch (_: Exception) {}
         }
 
+        // Set /tmp with 0777 permissions
+        val tmpDir = File(rootfsDir, "tmp")
+        if (!tmpDir.exists()) tmpDir.mkdirs()
+        try {
+            tmpDir.setReadable(true, false)
+            tmpDir.setWritable(true, false)
+            tmpDir.setExecutable(true, false)
+        } catch (_: Exception) {}
+
         try {
             val rootfsPath = rootfsDir.absolutePath
             val chmodCmd = listOf(
                 "/system/bin/sh",
                 "-c",
-                "chmod -R 755 \"$rootfsPath/usr/bin\" \"$rootfsPath/bin\" \"$rootfsPath/usr/sbin\" \"$rootfsPath/sbin\" \"$rootfsPath/usr/local/bin\" \"$rootfsPath/lib\" \"$rootfsPath/usr/lib\" 2>/dev/null"
+                "chmod -R 755 \"$rootfsPath/bin\" \"$rootfsPath/usr/bin\" \"$rootfsPath/sbin\" \"$rootfsPath/usr/sbin\" \"$rootfsPath/usr/local/bin\" \"$rootfsPath/lib\" \"$rootfsPath/usr/lib\" \"$rootfsPath/opt\" 2>/dev/null; chmod 777 \"$rootfsPath/tmp\" 2>/dev/null"
             )
             ProcessBuilder(chmodCmd).start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
         } catch (_: Exception) {}
+    }
+
+    private fun cleanDirectory(dir: File) {
+        if (!dir.exists()) return
+        try {
+            val chmodCmd = listOf(
+                "/system/bin/sh",
+                "-c",
+                "chmod -R 777 \"${dir.absolutePath}\" 2>/dev/null; rm -rf \"${dir.absolutePath}\"/* 2>/dev/null"
+            )
+            ProcessBuilder(chmodCmd).start().waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+        try {
+            dir.deleteRecursively()
+        } catch (_: Exception) {}
+        dir.mkdirs()
     }
 
 
@@ -222,6 +247,9 @@ class ArchLinuxInstaller(
             val isExistingValid = verifyExistingRootfs()
 
             if (!isExistingValid) {
+                notifyProgress(listener, "Directories", 22, "Purging any stale or corrupted Linux files...")
+                cleanDirectory(rootfsDir)
+
                 val assetRootfsName = when {
                     runCatching { context.assets.open("rootfs.tar.gz").close() }.isSuccess -> "rootfs.tar.gz"
                     runCatching { context.assets.open("rootfs.tar").close() }.isSuccess -> "rootfs.tar"
@@ -287,11 +315,9 @@ class ArchLinuxInstaller(
             notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
             val executor = CommandExecutor(rootfsDir, prootFile, context)
 
-            // Test execution with fallback commands: direct uname, sh, bash, and echo test
+            // Test execution with direct uname, echo test, and shell checks
             val testCommands = listOf(
                 "uname -m",
-                "/bin/sh -c 'uname -m'",
-                "/bin/bash -c 'uname -m'",
                 "/usr/bin/uname -m",
                 "echo aarch64"
             )
@@ -305,6 +331,9 @@ class ArchLinuxInstaller(
             }
 
             if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
+                try {
+                    File(rootfsDir, ".install_complete").writeText("v1.0.17\n")
+                } catch (_: Exception) {}
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
                 return@withContext true
@@ -321,6 +350,7 @@ class ArchLinuxInstaller(
     }
 
     private fun verifyExistingRootfs(): Boolean {
+        val completeMarker = File(rootfsDir, ".install_complete")
         val etcDir = File(rootfsDir, "etc")
         val hasBash = (File(rootfsDir, "usr/bin/bash").exists() && File(rootfsDir, "usr/bin/bash").length() > 0) ||
                       (File(rootfsDir, "bin/bash").exists() && File(rootfsDir, "bin/bash").length() > 0)
@@ -328,7 +358,7 @@ class ArchLinuxInstaller(
         val hasLinker = File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1").exists() ||
                         File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1").exists() ||
                         File(rootfsDir, "lib/ld-linux-aarch64.so.1").exists()
-        return etcDir.exists() && hasBash && hasLib && hasLinker
+        return completeMarker.exists() && etcDir.exists() && hasBash && hasLib && hasLinker
     }
 
     private fun setupProotBinary(prootFile: File) {
@@ -484,21 +514,19 @@ class ArchLinuxInstaller(
         val isGz = archive.name.endsWith(".gz") || archive.name.endsWith(".tgz")
         val commands = if (isGz) {
             listOf(
-                listOf("tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xpvf - -C \"${destDir.absolutePath}\""),
-                listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xpvf - -C \"${destDir.absolutePath}\""),
+                listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
                 listOf("tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath)
+                listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xvf - -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xvf - -C \"${destDir.absolutePath}\""),
+                listOf("toybox", "tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath)
             )
         } else {
             listOf(
-                listOf("tar", "-xpvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xpvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("/system/bin/sh", "-c", "tar -xpvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
-                listOf("/system/bin/sh", "-c", "toybox tar -xpvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
+                listOf("toybox", "tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
                 listOf("tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath)
+                listOf("/system/bin/sh", "-c", "tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\"")
             )
         }
 
