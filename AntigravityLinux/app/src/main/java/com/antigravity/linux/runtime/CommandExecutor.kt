@@ -121,6 +121,22 @@ class CommandExecutor(
             tmpDir.setReadable(true, false)
             tmpDir.setWritable(true, false)
             tmpDir.setExecutable(true, false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val perms = setOf(
+                        java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                        java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                        java.nio.file.attribute.PosixFilePermission.GROUP_WRITE,
+                        java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE,
+                        java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                        java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE,
+                        java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE
+                    )
+                    java.nio.file.Files.setPosixFilePermissions(tmpDir.toPath(), perms)
+                } catch (_: Exception) {}
+            }
         } catch (_: Exception) {}
         return tmpDir
     }

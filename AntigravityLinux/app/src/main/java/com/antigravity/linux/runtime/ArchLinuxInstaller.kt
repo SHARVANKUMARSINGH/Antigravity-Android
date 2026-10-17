@@ -75,6 +75,109 @@ class ArchLinuxInstaller(
         }
     }
 
+    private fun setPosixExecutable(file: File) {
+        try {
+            file.setReadable(true, false)
+            file.setExecutable(true, false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val perms = setOf(
+                        java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                        java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                        java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE,
+                        java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                        java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE
+                    )
+                    java.nio.file.Files.setPosixFilePermissions(file.toPath(), perms)
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun isSymlink(file: File): Boolean {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                java.nio.file.Files.isSymbolicLink(file.toPath())
+            } else {
+                file.canonicalPath != file.absolutePath
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun safelyEnsureBinary(source: File, target: File) {
+        if (!source.exists() || source.length() == 0L) return
+        try {
+            setPosixExecutable(source)
+
+            val sourceCanonical = try { source.canonicalPath } catch (_: Exception) { source.absolutePath }
+            val targetCanonical = try { target.canonicalPath } catch (_: Exception) { target.absolutePath }
+
+            // If target already resolves to the exact same file on disk, do not delete it!
+            if (sourceCanonical == targetCanonical && target.exists()) {
+                setPosixExecutable(target)
+                return
+            }
+
+            target.parentFile?.mkdirs()
+            if (target.exists() || isSymlink(target)) {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        java.nio.file.Files.deleteIfExists(target.toPath())
+                    } else {
+                        target.delete()
+                    }
+                } catch (_: Exception) {
+                    target.delete()
+                }
+            }
+            source.copyTo(target, overwrite = true)
+            setPosixExecutable(target)
+        } catch (_: Exception) {}
+    }
+
+    private fun fixAllExecutablePermissions() {
+        val binDirs = listOf(
+            File(rootfsDir, "bin"),
+            File(rootfsDir, "usr/bin"),
+            File(rootfsDir, "sbin"),
+            File(rootfsDir, "usr/sbin"),
+            File(rootfsDir, "usr/local/bin"),
+            File(rootfsDir, "lib"),
+            File(rootfsDir, "usr/lib"),
+            File(rootfsDir, "lib64"),
+            File(rootfsDir, "usr/lib/aarch64-linux-gnu"),
+            File(rootfsDir, "opt/antigravity")
+        )
+
+        for (dir in binDirs) {
+            if (!dir.exists()) continue
+            try {
+                setPosixExecutable(dir)
+                val files = dir.listFiles() ?: continue
+                for (file in files) {
+                    try {
+                        setPosixExecutable(file)
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
+
+        try {
+            val rootfsPath = rootfsDir.absolutePath
+            val chmodCmd = listOf(
+                "/system/bin/sh",
+                "-c",
+                "chmod -R 755 \"$rootfsPath/usr/bin\" \"$rootfsPath/bin\" \"$rootfsPath/usr/sbin\" \"$rootfsPath/sbin\" \"$rootfsPath/usr/local/bin\" \"$rootfsPath/lib\" \"$rootfsPath/usr/lib\" 2>/dev/null"
+            )
+            ProcessBuilder(chmodCmd).start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+    }
+
+
     suspend fun install(listener: InstallProgressListener): Boolean = withContext(Dispatchers.IO) {
         try {
             // 1. Storage Pre-flight Check (250MB required for 27MB ultra-small rootfs)
@@ -219,9 +322,13 @@ class ArchLinuxInstaller(
 
     private fun verifyExistingRootfs(): Boolean {
         val etcDir = File(rootfsDir, "etc")
-        val hasShell = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "bin/sh").exists() || File(rootfsDir, "usr/bin/bash").exists()
-        val hasLib = File(rootfsDir, "usr/lib").exists() || File(rootfsDir, "lib").exists() || File(rootfsDir, "usr/bin").exists()
-        return etcDir.exists() && hasShell && hasLib
+        val hasBash = (File(rootfsDir, "usr/bin/bash").exists() && File(rootfsDir, "usr/bin/bash").length() > 0) ||
+                      (File(rootfsDir, "bin/bash").exists() && File(rootfsDir, "bin/bash").length() > 0)
+        val hasLib = File(rootfsDir, "usr/lib").exists() || File(rootfsDir, "lib").exists()
+        val hasLinker = File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1").exists() ||
+                        File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1").exists() ||
+                        File(rootfsDir, "lib/ld-linux-aarch64.so.1").exists()
+        return etcDir.exists() && hasBash && hasLib && hasLinker
     }
 
     private fun setupProotBinary(prootFile: File) {
@@ -377,17 +484,21 @@ class ArchLinuxInstaller(
         val isGz = archive.name.endsWith(".gz") || archive.name.endsWith(".tgz")
         val commands = if (isGz) {
             listOf(
+                listOf("tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("toybox", "tar", "-xpzvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xpvf - -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xpvf - -C \"${destDir.absolutePath}\""),
                 listOf("tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("/system/bin/sh", "-c", "gzip -dc \"${archive.absolutePath}\" | tar -xvf - -C \"${destDir.absolutePath}\""),
-                listOf("/system/bin/sh", "-c", "toybox gzip -dc \"${archive.absolutePath}\" | toybox tar -xvf - -C \"${destDir.absolutePath}\"")
+                listOf("toybox", "tar", "-xzvf", archive.absolutePath, "-C", destDir.absolutePath)
             )
         } else {
             listOf(
+                listOf("tar", "-xpvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("toybox", "tar", "-xpvf", archive.absolutePath, "-C", destDir.absolutePath),
+                listOf("/system/bin/sh", "-c", "tar -xpvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
+                listOf("/system/bin/sh", "-c", "toybox tar -xpvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
                 listOf("tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("toybox", "tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath),
-                listOf("/system/bin/sh", "-c", "tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\""),
-                listOf("/system/bin/sh", "-c", "toybox tar -xvf \"${archive.absolutePath}\" -C \"${destDir.absolutePath}\"")
+                listOf("toybox", "tar", "-xvf", archive.absolutePath, "-C", destDir.absolutePath)
             )
         }
 
@@ -425,6 +536,7 @@ class ArchLinuxInstaller(
                               File(destDir, "usr/bin/dash").exists() || File(destDir, "bin/sh").exists()
                 val hasEtc = File(destDir, "etc").exists()
                 if (exitCode == 0 || (hasBash && hasEtc)) {
+                    fixAllExecutablePermissions()
                     notifyProgress(listener, "Extraction", 85, "Extracted $fileCount files successfully.")
                     return true
                 }
@@ -476,56 +588,41 @@ class ArchLinuxInstaller(
                 setExecutable(true, false)
             } catch (_: Exception) {}
         }
-        File(rootfsDir, "lib").mkdirs()
-        File(rootfsDir, "lib64").mkdirs()
-        File(rootfsDir, "bin").mkdirs()
-
-        // Configure policy-rc.d to prevent apt-get from trying to invoke systemd inside PRoot
-        val policyRc = File(rootfsDir, "usr/sbin/policy-rc.d")
-        safeWriteText(policyRc, "#!/bin/sh\nexit 101\n")
-        try { policyRc.setExecutable(true, false) } catch (_: Exception) {}
-
-        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists as a valid physical binary
+        // 1. Repair and ensure dynamic linker ld-linux-aarch64.so.1
         val candidateLd = listOf(
             File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"),
-            File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1")
+            File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1"),
+            File(rootfsDir, "lib/ld-linux-aarch64.so.1")
         ).firstOrNull { it.exists() && it.length() > 0 }
 
         if (candidateLd != null) {
+            setPosixExecutable(candidateLd)
             val libLd = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
             val lib64Ld = File(rootfsDir, "lib64/ld-linux-aarch64.so.1")
-            for (target in listOf(libLd, lib64Ld)) {
-                try {
-                    target.parentFile?.mkdirs()
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        try { java.nio.file.Files.deleteIfExists(target.toPath()) } catch (_: Exception) {}
-                    }
-                    try { target.delete() } catch (_: Exception) {}
-                    candidateLd.copyTo(target, overwrite = true)
-                    target.setExecutable(true, false)
-                    target.setReadable(true, false)
-                } catch (_: Exception) {}
-            }
+            safelyEnsureBinary(candidateLd, libLd)
+            safelyEnsureBinary(candidateLd, lib64Ld)
         }
 
-        // Ensure shells /bin/bash and /bin/sh exist as valid physical binaries
+        // 2. Repair and ensure shells (bash, dash, sh)
         val usrBash = File(rootfsDir, "usr/bin/bash")
+        val usrDash = File(rootfsDir, "usr/bin/dash")
+        val usrSh = File(rootfsDir, "usr/bin/sh")
+        val binBash = File(rootfsDir, "bin/bash")
+        val binSh = File(rootfsDir, "bin/sh")
+
         if (usrBash.exists() && usrBash.length() > 0) {
-            val binBash = File(rootfsDir, "bin/bash")
-            val binSh = File(rootfsDir, "bin/sh")
-            for (target in listOf(binBash, binSh)) {
-                try {
-                    target.parentFile?.mkdirs()
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        try { java.nio.file.Files.deleteIfExists(target.toPath()) } catch (_: Exception) {}
-                    }
-                    try { target.delete() } catch (_: Exception) {}
-                    usrBash.copyTo(target, overwrite = true)
-                    target.setExecutable(true, false)
-                    target.setReadable(true, false)
-                } catch (_: Exception) {}
-            }
+            setPosixExecutable(usrBash)
+            safelyEnsureBinary(usrBash, binBash)
+            safelyEnsureBinary(usrBash, binSh)
+            safelyEnsureBinary(usrBash, usrSh)
         }
+
+        if (usrDash.exists() && usrDash.length() > 0) {
+            setPosixExecutable(usrDash)
+        }
+
+        // 3. Fix POSIX 0755 executable permissions across the entire rootfs binary tree
+        fixAllExecutablePermissions()
 
         // Configure apt sandbox to prevent privilege drop failure in PRoot on Android
         val aptConfDir = File(rootfsDir, "etc/apt/apt.conf.d")
