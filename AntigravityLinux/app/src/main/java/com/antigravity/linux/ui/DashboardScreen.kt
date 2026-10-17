@@ -513,8 +513,14 @@ private fun InstallationProgressCard(progress: Int, statusMessage: String) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val title = when {
+                    statusMessage.contains("Desktop", ignoreCase = true) || statusMessage.contains("IDE", ignoreCase = true) || statusMessage.contains("Antigravity", ignoreCase = true) -> "Installing Antigravity Environment..."
+                    statusMessage.contains("Download", ignoreCase = true) -> "Downloading Linux ARM64 Rootfs..."
+                    statusMessage.contains("Extract", ignoreCase = true) -> "Extracting Linux Filesystem..."
+                    else -> "Setting up Ultra-Light Linux ARM64..."
+                }
                 Text(
-                    text = "Setting up Ultra-Light Linux ARM64 (27 MB)...",
+                    text = title,
                     style = MaterialTheme.typography.titleSmall,
                     color = Violet40,
                     fontWeight = FontWeight.SemiBold

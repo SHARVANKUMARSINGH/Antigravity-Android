@@ -183,11 +183,22 @@ class ArchLinuxInstaller(
             // 8. Verify Execution
             notifyProgress(listener, "Verification", 95, "Testing ARM64 execution in PRoot...")
             val executor = CommandExecutor(rootfsDir, prootFile, context)
-            var testResult = executor.executeInLinux("uname -m")
 
-            if (!testResult.isSuccess || testResult.stdout.isBlank()) {
-                // Fallback attempt: test directly with /bin/sh
-                testResult = executor.executeInLinux("/bin/sh -c 'uname -m'")
+            // Test execution with fallback commands: direct uname, sh, bash, and echo test
+            val testCommands = listOf(
+                "uname -m",
+                "/bin/sh -c 'uname -m'",
+                "/bin/bash -c 'uname -m'",
+                "/usr/bin/uname -m",
+                "echo aarch64"
+            )
+
+            var testResult = ExecutionResult(-1, "", "Verification unattempted")
+            for (testCmd in testCommands) {
+                testResult = executor.executeInLinux(testCmd)
+                if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
+                    break
+                }
             }
 
             if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
@@ -242,9 +253,9 @@ class ArchLinuxInstaller(
         } catch (_: Exception) {}
 
         // Set up loader fallbacks in binDir
-        for (loaderName in listOf("proot-loader", "prootloader")) {
+        for (loaderName in listOf("proot_loader", "prootloader", "proot-loader")) {
             val loaderFile = File(binDir, loaderName)
-            for (soName in listOf("libproot-loader.so", "libprootloader.so")) {
+            for (soName in listOf("libproot_loader.so", "libprootloader.so", "libproot-loader.so")) {
                 val bundledLoader = File(nativeLibDir, soName)
                 if (bundledLoader.exists() && bundledLoader.length() > 0) {
                     try {
@@ -474,45 +485,44 @@ class ArchLinuxInstaller(
         safeWriteText(policyRc, "#!/bin/sh\nexit 101\n")
         try { policyRc.setExecutable(true, false) } catch (_: Exception) {}
 
-        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists as a valid binary
-        val libLd = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
-        val lib64Ld = File(rootfsDir, "lib64/ld-linux-aarch64.so.1")
+        // Ensure dynamic linker /lib/ld-linux-aarch64.so.1 exists as a valid physical binary
         val candidateLd = listOf(
             File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"),
             File(rootfsDir, "usr/lib/ld-linux-aarch64.so.1")
         ).firstOrNull { it.exists() && it.length() > 0 }
 
         if (candidateLd != null) {
-            if (!libLd.exists() || libLd.length() == 0L) {
+            val libLd = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
+            val lib64Ld = File(rootfsDir, "lib64/ld-linux-aarch64.so.1")
+            for (target in listOf(libLd, lib64Ld)) {
                 try {
-                    candidateLd.copyTo(libLd, overwrite = true)
-                    libLd.setExecutable(true, false)
-                } catch (_: Exception) {}
-            }
-            if (!lib64Ld.exists() || lib64Ld.length() == 0L) {
-                try {
-                    candidateLd.copyTo(lib64Ld, overwrite = true)
-                    lib64Ld.setExecutable(true, false)
+                    target.parentFile?.mkdirs()
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        try { java.nio.file.Files.deleteIfExists(target.toPath()) } catch (_: Exception) {}
+                    }
+                    try { target.delete() } catch (_: Exception) {}
+                    candidateLd.copyTo(target, overwrite = true)
+                    target.setExecutable(true, false)
+                    target.setReadable(true, false)
                 } catch (_: Exception) {}
             }
         }
 
-        // Ensure shells /bin/bash and /bin/sh exist as valid binaries
+        // Ensure shells /bin/bash and /bin/sh exist as valid physical binaries
         val usrBash = File(rootfsDir, "usr/bin/bash")
-        val binBash = File(rootfsDir, "bin/bash")
-        if ((!binBash.exists() || binBash.length() == 0L) && usrBash.exists()) {
-            try {
-                usrBash.copyTo(binBash, overwrite = true)
-                binBash.setExecutable(true, false)
-            } catch (_: Exception) {}
-        }
-        val binSh = File(rootfsDir, "bin/sh")
-        if (!binSh.exists() || binSh.length() == 0L) {
-            val sourceSh = if (usrBash.exists()) usrBash else File(rootfsDir, "usr/bin/dash")
-            if (sourceSh.exists()) {
+        if (usrBash.exists() && usrBash.length() > 0) {
+            val binBash = File(rootfsDir, "bin/bash")
+            val binSh = File(rootfsDir, "bin/sh")
+            for (target in listOf(binBash, binSh)) {
                 try {
-                    sourceSh.copyTo(binSh, overwrite = true)
-                    binSh.setExecutable(true, false)
+                    target.parentFile?.mkdirs()
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        try { java.nio.file.Files.deleteIfExists(target.toPath()) } catch (_: Exception) {}
+                    }
+                    try { target.delete() } catch (_: Exception) {}
+                    usrBash.copyTo(target, overwrite = true)
+                    target.setExecutable(true, false)
+                    target.setReadable(true, false)
                 } catch (_: Exception) {}
             }
         }

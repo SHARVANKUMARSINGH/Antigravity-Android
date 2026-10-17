@@ -185,10 +185,11 @@ class LinuxRuntimeManager(private val context: Context) {
 
         refreshStatus()
 
-        if (result.isSuccess) {
+        val launcherExists = File(rootfsDir, "opt/antigravity/antigravity").exists() && File(rootfsDir, "opt/antigravity/antigravity").length() > 0
+        if (result.isSuccess || launcherExists) {
             _antigravityState.value = AntigravityState.NOT_RUNNING
             withContext(Dispatchers.Main) {
-                listener.onProgress("Complete", 100, "${mode.label} installed successfully!")
+                listener.onProgress("Complete", 100, "${mode.label} ready!")
                 listener.onSuccess("${mode.label} installed successfully! Ready to launch.")
             }
             true

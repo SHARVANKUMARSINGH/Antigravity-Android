@@ -32,18 +32,18 @@ class CommandExecutor(
         var cachedWorkingProfile: ProotProfile? = null
 
         val CANDIDATE_PROFILES = listOf(
-            // Profile 0: Native seccomp with loader, no sysfs bind (Universal default for modern Android)
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
-            // Profile 1: Native seccomp without loader, no sysfs bind
-            ProotProfile(noSeccomp = false, useLoader = false, bindSys = false),
-            // Profile 2: PROOT_NO_SECCOMP without loader (for kernels restricting seccomp filter)
-            ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
-            // Profile 3: PROOT_NO_SECCOMP with loader
+            // Profile 0: PROOT_NO_SECCOMP with loader, no sysfs bind (Required standard for Samsung / Android 14 ARM64)
             ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
-            // Profile 4: Full bindings with native seccomp
+            // Profile 1: PROOT_NO_SECCOMP with loader and sysfs bind
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
+            // Profile 2: Native seccomp with loader, no sysfs bind (for kernels supporting seccomp trap)
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
+            // Profile 3: Native seccomp with loader and sysfs bind
             ProotProfile(noSeccomp = false, useLoader = true, bindSys = true),
-            // Profile 5: Full bindings with PROOT_NO_SECCOMP
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true)
+            // Profile 4: PROOT_NO_SECCOMP without loader (fallback)
+            ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
+            // Profile 5: Native seccomp without loader (legacy fallback)
+            ProotProfile(noSeccomp = false, useLoader = false, bindSys = false)
         )
     }
 
@@ -82,14 +82,14 @@ class CommandExecutor(
     fun getEffectiveLoader(): File? {
         if (context != null) {
             val libDir = File(context.applicationInfo.nativeLibraryDir)
-            for (name in listOf("libproot-loader.so", "libprootloader.so")) {
+            for (name in listOf("libproot_loader.so", "libprootloader.so", "libproot-loader.so")) {
                 val f = File(libDir, name)
                 if (f.exists() && f.length() > 0) {
                     try { f.setExecutable(true, false) } catch (_: Exception) {}
                     return f
                 }
             }
-            for (name in listOf("bin/proot-loader", "bin/prootloader")) {
+            for (name in listOf("bin/proot_loader", "bin/prootloader", "bin/proot-loader")) {
                 val f = File(context.filesDir, name)
                 if (f.exists() && f.length() > 0) {
                     try { f.setExecutable(true, false) } catch (_: Exception) {}
@@ -98,7 +98,7 @@ class CommandExecutor(
             }
         }
         val parent = rootfsDir.parentFile ?: return null
-        for (name in listOf("bin/proot-loader", "bin/prootloader")) {
+        for (name in listOf("bin/proot_loader", "bin/prootloader", "bin/proot-loader")) {
             val f = File(parent, name)
             if (f.exists() && f.length() > 0) {
                 try { f.setExecutable(true, false) } catch (_: Exception) {}
@@ -112,8 +112,8 @@ class CommandExecutor(
      * Resolves an app-writable temporary directory for PRoot translation tables and sockets.
      */
     fun getProotTmpDir(): File {
-        val baseDir = context?.cacheDir ?: File(rootfsDir.parentFile ?: rootfsDir, "tmp")
-        val tmpDir = File(baseDir, "proot_tmp")
+        val baseDir = context?.filesDir ?: File(rootfsDir.parentFile ?: rootfsDir, "tmp")
+        val tmpDir = File(baseDir, "tmp")
         if (!tmpDir.exists()) {
             tmpDir.mkdirs()
         }
