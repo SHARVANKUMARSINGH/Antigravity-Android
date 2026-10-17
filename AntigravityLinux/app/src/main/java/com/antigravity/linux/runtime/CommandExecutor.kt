@@ -349,14 +349,15 @@ class CommandExecutor(
             }
         }
 
-        // 1. If we already found a working profile, attempt it first
+        // 1. If we already found a working profile, use it directly (prevents repeating long commands)
         val cached = cachedWorkingProfile
         if (cached != null) {
             val result = runAttempt(cached, shellPath)
-            if (result.isSuccess || (result.exitCode in 1..254 && result.exitCode != 127)) {
-                return@withContext result
+            if (!result.isSuccess && shellPath != "/bin/sh") {
+                val shResult = runAttempt(cached, "/bin/sh")
+                if (shResult.isSuccess) return@withContext shResult
             }
-            // If exit code is 255 (SIGSEGV/failure), fall through to profile rediscovery
+            return@withContext result
         }
 
         // 2. Discover working profile across candidate profiles

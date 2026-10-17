@@ -658,7 +658,6 @@ class ArchLinuxInstaller(
             setupApp,
             """
             #!/bin/bash
-            set -e
             mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
             rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
@@ -679,10 +678,11 @@ class ArchLinuxInstaller(
             dpkg --configure -a || true
 
             echo "[*] Updating package repositories..."
+            apt-get clean || true
             apt-get update -y || true
 
             echo "[*] Installing minimal X11/VNC desktop server & Antigravity Desktop App..."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing \
                 xvfb x11vnc openbox tint2 xterm ca-certificates curl python3 libnss3 libatk1.0-0 libasound2 || true
 
             echo "[✓] Antigravity Desktop App installed successfully!"
@@ -696,7 +696,6 @@ class ArchLinuxInstaller(
             setupIde,
             """
             #!/bin/bash
-            set -e
             mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
             rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
@@ -717,10 +716,11 @@ class ArchLinuxInstaller(
             dpkg --configure -a || true
 
             echo "[*] Updating package repositories..."
+            apt-get clean || true
             apt-get update -y || true
 
             echo "[*] Installing Desktop IDE environment (developer tools, git, node, python)..."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing \
                 xvfb x11vnc openbox tint2 xterm git curl wget ca-certificates \
                 build-essential python3 python3-pip libnss3 libatk1.0-0 libasound2 || true
 
