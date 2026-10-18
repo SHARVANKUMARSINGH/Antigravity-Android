@@ -180,7 +180,7 @@ class ArchLinuxInstaller(
             val chmodCmd = listOf(
                 "/system/bin/sh",
                 "-c",
-                "chmod -R 755 \"$rootfsPath/bin\" \"$rootfsPath/usr/bin\" \"$rootfsPath/sbin\" \"$rootfsPath/usr/sbin\" \"$rootfsPath/usr/local/bin\" \"$rootfsPath/lib\" \"$rootfsPath/usr/lib\" \"$rootfsPath/opt\" 2>/dev/null; chmod 777 \"$rootfsPath/tmp\" 2>/dev/null"
+                "chmod -R 755 \"$rootfsPath/bin\" \"$rootfsPath/usr/bin\" \"$rootfsPath/sbin\" \"$rootfsPath/usr/sbin\" \"$rootfsPath/usr/local/bin\" \"$rootfsPath/lib\" \"$rootfsPath/usr/lib\" 2>/dev/null; chmod -R 777 \"$rootfsPath/tmp\" \"$rootfsPath/opt\" \"$rootfsPath/home\" 2>/dev/null"
             )
             ProcessBuilder(chmodCmd).start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
         } catch (_: Exception) {}
@@ -770,18 +770,7 @@ class ArchLinuxInstaller(
         }
         val launcherFile = File(optDir, "antigravity")
         if (!launcherFile.exists() || launcherFile.length() == 0L) {
-            safeWriteText(
-                launcherFile,
-                """
-                #!/bin/bash
-                export DISPLAY=:1
-                export USER=antigravity
-                export HOME=/home/antigravity
-                xsetroot -solid "#1e1e2e" 2>/dev/null
-                exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
-                """.trimIndent()
-            )
-            launcherFile.setExecutable(true, false)
+            writeLauncher(com.antigravity.linux.data.AntigravityMode.APP)
         }
         val modeFile = File(optDir, ".installed_mode")
         if (!modeFile.exists() || modeFile.length() == 0L) {
@@ -904,6 +893,7 @@ class ArchLinuxInstaller(
                 xvfb x11vnc openbox tint2 xterm ca-certificates curl python3 libnss3 libatk1.0-0 libasound2 || true
 
             echo "[✓] Antigravity Desktop App installed successfully!"
+            exit 0
             """.trimIndent()
         )
         setupApp.setExecutable(true, false)
@@ -947,6 +937,7 @@ class ArchLinuxInstaller(
                 build-essential python3 python3-pip libnss3 libatk1.0-0 libasound2 || true
 
             echo "[✓] Antigravity Desktop IDE installed successfully!"
+            exit 0
             """.trimIndent()
         )
         setupIde.setExecutable(true, false)
@@ -974,8 +965,7 @@ class ArchLinuxInstaller(
 
             ANTIGRAVITY_BIN="/opt/antigravity/antigravity"
             if [ -f "${'$'}ANTIGRAVITY_BIN" ]; then
-                chmod +x "${'$'}ANTIGRAVITY_BIN" 2>/dev/null
-                exec /bin/bash "${'$'}ANTIGRAVITY_BIN" "$@" > /home/antigravity/.antigravity.log 2>&1 &
+                /bin/bash "${'$'}ANTIGRAVITY_BIN" "$@" > /home/antigravity/.antigravity.log 2>&1 &
                 echo "[✓] Antigravity launched on DISPLAY=:1"
             else
                 echo "Antigravity binary not found at ${'$'}ANTIGRAVITY_BIN" >&2
@@ -984,6 +974,56 @@ class ArchLinuxInstaller(
             """.trimIndent()
         )
         launchAntigravity.setExecutable(true, false)
+    }
+
+    /**
+     * Directly provisions the Antigravity launcher script and installed mode flag on disk.
+     */
+    fun writeLauncher(mode: com.antigravity.linux.data.AntigravityMode): Boolean {
+        val optDir = File(rootfsDir, "opt/antigravity").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
+        val launcherFile = File(optDir, "antigravity")
+        val launcherContent = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) {
+            """
+            #!/bin/bash
+            export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
+            xsetroot -solid "#181825" 2>/dev/null
+            exec xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l"
+            """.trimIndent()
+        } else {
+            """
+            #!/bin/bash
+            export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
+            xsetroot -solid "#1e1e2e" 2>/dev/null
+            exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
+            """.trimIndent()
+        }
+        safeWriteText(launcherFile, launcherContent)
+        setPosixExecutable(launcherFile)
+        val modeFile = File(optDir, ".installed_mode")
+        safeWriteText(modeFile, mode.label + "\n")
+
+        try {
+            val rootfsPath = rootfsDir.absolutePath
+            val chmodCmd = listOf(
+                "/system/bin/sh",
+                "-c",
+                "chmod -R 777 \"$rootfsPath/opt\" \"$rootfsPath/tmp\" \"$rootfsPath/home\" 2>/dev/null"
+            )
+            ProcessBuilder(chmodCmd).start().waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+
+        return launcherFile.exists() && launcherFile.length() > 0
     }
 
     /**

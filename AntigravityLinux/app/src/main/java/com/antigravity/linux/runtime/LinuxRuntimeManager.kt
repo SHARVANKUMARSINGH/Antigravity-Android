@@ -168,50 +168,20 @@ class LinuxRuntimeManager(private val context: Context) {
         }
 
         // 1. Immediately create/update launcher and installed mode directly on disk
-        val optDir = File(rootfsDir, "opt/antigravity").apply {
-            mkdirs()
-            try {
-                setReadable(true, false)
-                setWritable(true, false)
-                setExecutable(true, false)
-            } catch (_: Exception) {}
-        }
-        val launcherFile = File(optDir, "antigravity")
-        val launcherContent = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) {
-            """
-            #!/bin/bash
-            export DISPLAY=:1
-            export USER=antigravity
-            export HOME=/home/antigravity
-            xsetroot -solid "#181825" 2>/dev/null
-            exec xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l"
-            """.trimIndent()
-        } else {
-            """
-            #!/bin/bash
-            export DISPLAY=:1
-            export USER=antigravity
-            export HOME=/home/antigravity
-            xsetroot -solid "#1e1e2e" 2>/dev/null
-            exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
-            """.trimIndent()
-        }
-        try {
-            launcherFile.writeText(launcherContent)
-            launcherFile.setExecutable(true, false)
-            File(optDir, ".installed_mode").writeText(mode.label + "\n")
-        } catch (_: Exception) {}
-
-        // Ensure usr/local/bin setup scripts exist
+        val launcherCreated = installer.writeLauncher(mode)
         installer.ensureSetupScripts()
 
+        // 2. Mark installed mode and state ready
+        _antigravityState.value = AntigravityState.NOT_RUNNING
+        _installedMode.value = mode.label
+
         withContext(Dispatchers.Main) {
-            listener.onProgress("Setup", 25, "Executing package configuration for ${mode.label}...")
+            listener.onProgress("Setup", 30, "Configuring packages for ${mode.label}...")
         }
 
         val script = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) "/usr/local/bin/setup-antigravity-ide" else "/usr/local/bin/setup-antigravity-app"
 
-        var stepPercent = 25
+        var stepPercent = 30
         val result = commandExecutor.executeInLinuxStream(
             command = script,
             workDir = "/root",
@@ -220,7 +190,7 @@ class LinuxRuntimeManager(private val context: Context) {
             onLine = { line ->
                 val clean = line.trim()
                 if (clean.isNotBlank()) {
-                    stepPercent = (stepPercent + 1).coerceAtMost(92)
+                    stepPercent = (stepPercent + 1).coerceAtMost(95)
                     scope.launch(Dispatchers.Main) {
                         _statusMessage.value = clean
                         listener.onProgress("Setup", stepPercent, clean)
@@ -231,10 +201,13 @@ class LinuxRuntimeManager(private val context: Context) {
 
         refreshStatus()
 
-        val launcherExists = launcherFile.exists() && launcherFile.length() > 0
-        if (result.isSuccess || launcherExists) {
+        val launcherFile = File(rootfsDir, "opt/antigravity/antigravity")
+        val launcherExists = launcherCreated || (launcherFile.exists() && launcherFile.length() > 0)
+
+        if (launcherExists || result.isSuccess) {
             _antigravityState.value = AntigravityState.NOT_RUNNING
             _installedMode.value = mode.label
+            _statusMessage.value = "${mode.label} is installed and ready to launch."
             withContext(Dispatchers.Main) {
                 listener.onProgress("Complete", 100, "${mode.label} ready!")
                 listener.onSuccess("${mode.label} installed successfully! Ready to launch.")
@@ -242,7 +215,7 @@ class LinuxRuntimeManager(private val context: Context) {
             true
         } else {
             _antigravityState.value = AntigravityState.NOT_INSTALLED
-            val err = result.stderr.ifBlank { result.stdout }.ifBlank { "Exit code ${result.exitCode}" }
+            val err = result.stderr.ifBlank { result.stdout }.ifBlank { "Could not provision launcher file" }
             withContext(Dispatchers.Main) {
                 listener.onError("Setup", "Installation failed: $err")
             }

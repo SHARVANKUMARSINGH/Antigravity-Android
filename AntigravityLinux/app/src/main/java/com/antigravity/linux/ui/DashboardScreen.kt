@@ -213,6 +213,7 @@ private fun StatusOverviewCard(
                 value = antigravityState.label,
                 stateColor = when (antigravityState) {
                     AntigravityState.RUNNING -> StatusGreen
+                    AntigravityState.NOT_RUNNING -> StatusBlue
                     AntigravityState.STARTING, AntigravityState.CHECKING -> StatusOrange
                     AntigravityState.ERROR, AntigravityState.UNSUPPORTED -> StatusRed
                     else -> TextSecondary
@@ -332,7 +333,7 @@ private fun ControlActionsCard(
             )
 
             // 3. Antigravity Desktop / IDE
-            val isAntigravityInstalled = (antigravityState == AntigravityState.RUNNING || antigravityState == AntigravityState.NOT_RUNNING) && diagnostics.installedMode != "None"
+            val isAntigravityInstalled = antigravityState == AntigravityState.RUNNING || antigravityState == AntigravityState.NOT_RUNNING
             if (!isAntigravityInstalled) {
                 ActionButton(
                     title = "3. Install Antigravity",
@@ -350,9 +351,10 @@ private fun ControlActionsCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(modifier = Modifier.weight(1f)) {
+                        val activeLabel = if (diagnostics.installedMode != "None") diagnostics.installedMode else "Desktop App"
                         ActionButton(
-                            title = if (diagnostics.installedMode == "Desktop IDE") "3. Launch Antigravity IDE" else "3. Launch Antigravity Desktop",
-                            subtitle = "Run ${diagnostics.installedMode} on DISPLAY=:1",
+                            title = if (activeLabel == "Desktop IDE") "3. Launch Antigravity IDE" else "3. Launch Antigravity Desktop",
+                            subtitle = "Run $activeLabel on DISPLAY=:1",
                             icon = Icons.Default.RocketLaunch,
                             containerColor = SurfaceCardElevated,
                             contentColor = Violet40,

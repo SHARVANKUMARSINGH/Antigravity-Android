@@ -32,17 +32,19 @@ class CommandExecutor(
         var cachedWorkingProfile: ProotProfile? = null
 
         val CANDIDATE_PROFILES = listOf(
-            // Profile 0: Native seccomp with loader (Hardware acceleration seccomp mode 2 + loader - optimal for ARM64 Android 10+)
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
-            // Profile 1: Native seccomp with loader and sysfs bind
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true),
-            // Profile 2: Native seccomp direct (no loader)
+            // Profile 0: Native seccomp direct (Hardware acceleration seccomp mode 2, no external loader) - primary on Android 10+
             ProotProfile(noSeccomp = false, useLoader = false, bindSys = false),
-            // Profile 3: PROOT_NO_SECCOMP with loader
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
+            // Profile 1: Native seccomp with loader
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
+            // Profile 2: Native seccomp direct with sysfs bind
+            ProotProfile(noSeccomp = false, useLoader = false, bindSys = true),
+            // Profile 3: Native seccomp with loader and sysfs bind
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = true),
             // Profile 4: PROOT_NO_SECCOMP without loader
             ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
-            // Profile 5: PROOT_NO_SECCOMP with sysfs bind
+            // Profile 5: PROOT_NO_SECCOMP with loader
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
+            // Profile 6: PROOT_NO_SECCOMP with sysfs bind
             ProotProfile(noSeccomp = true, useLoader = false, bindSys = true)
         )
     }
@@ -240,7 +242,7 @@ class CommandExecutor(
     ) {
         val tmpDir = getProotTmpDir()
         env["PROOT_TMP_DIR"] = tmpDir.absolutePath
-        env["TMPDIR"] = "/tmp"
+        env["TMPDIR"] = tmpDir.absolutePath
         env["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
         env["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
         env["PROOT_VERBOSE"] = "1"
@@ -441,11 +443,15 @@ class CommandExecutor(
         for (pBin in prootCandidates) {
             for (candidate in CANDIDATE_PROFILES) {
                 try {
-                    val cmdList = buildProotCommandForProfileWithBinary(pBin, candidate, "/", shellPath, "-c", "exit 0")
+                    val cmdList = if (File(rootfsDir, "usr/bin/uname").exists()) {
+                        buildProotCommandForProfileWithBinary(pBin, candidate, "/", "/usr/bin/uname", "-m")
+                    } else {
+                        buildProotCommandForProfileWithBinary(pBin, candidate, "/", shellPath, "-c", "exit 0")
+                    }
                     val process = ProcessBuilder(cmdList).directory(hostWorkDir).apply {
                         applyProotEnvironmentForProfile(candidate, environment(), "root")
                     }.start()
-                    val finished = process.waitFor(5, TimeUnit.SECONDS)
+                    val finished = process.waitFor(10, TimeUnit.SECONDS)
                     if (finished && process.exitValue() == 0) {
                         cachedWorkingProfile = candidate
                         return@withContext candidate

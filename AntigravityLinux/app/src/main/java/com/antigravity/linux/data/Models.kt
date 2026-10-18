@@ -34,7 +34,7 @@ enum class AntigravityState(val label: String) {
     CHECKING("Checking"),
     STARTING("Starting"),
     RUNNING("Running"),
-    NOT_RUNNING("Not Running"),
+    NOT_RUNNING("Ready"),
     UNSUPPORTED("Unsupported"),
     ERROR("Error")
 }
