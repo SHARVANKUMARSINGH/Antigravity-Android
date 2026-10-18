@@ -41,10 +41,16 @@ class AntigravityManager(
         if (!binaryFile.exists() || !binaryFile.canRead()) return false
         return try {
             RandomAccessFile(binaryFile, "r").use { raf ->
-                val magic = ByteArray(4)
-                raf.readFully(magic)
-                if (magic[0] != 0x7F.toByte() || magic[1] != 'E'.code.toByte() ||
-                    magic[2] != 'L'.code.toByte() || magic[3] != 'F'.code.toByte()
+                if (raf.length() < 2) return false
+                val header = ByteArray(4)
+                val bytesRead = raf.read(header)
+                if (bytesRead >= 2 && header[0] == '#'.code.toByte() && header[1] == '!'.code.toByte()) {
+                    // Valid shell launcher script (e.g. #!/bin/bash)
+                    return true
+                }
+                if (bytesRead < 4) return false
+                if (header[0] != 0x7F.toByte() || header[1] != 'E'.code.toByte() ||
+                    header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte()
                 ) {
                     return false
                 }

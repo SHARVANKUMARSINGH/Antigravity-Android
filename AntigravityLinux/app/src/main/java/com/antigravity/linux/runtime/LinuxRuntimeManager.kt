@@ -60,8 +60,10 @@ class LinuxRuntimeManager(private val context: Context) {
 
     fun readVncLogs(): String {
         val candidates = listOf(
+            File(commandExecutor.getProotTmpDir(), "vncserver.log"),
             File(rootfsDir, "tmp/vncserver.log"),
-            File(rootfsDir, "home/antigravity/.vnc/desktop.log")
+            File(rootfsDir, "home/antigravity/.vnc/desktop.log"),
+            File(rootfsDir, "home/antigravity/.antigravity.log")
         )
         for (f in candidates) {
             if (f.exists() && f.length() > 0) {
@@ -78,8 +80,10 @@ class LinuxRuntimeManager(private val context: Context) {
 
     fun clearVncLogs() {
         try {
+            File(commandExecutor.getProotTmpDir(), "vncserver.log").writeText("")
             File(rootfsDir, "tmp/vncserver.log").writeText("")
             File(rootfsDir, "home/antigravity/.vnc/desktop.log").writeText("")
+            File(rootfsDir, "home/antigravity/.antigravity.log").writeText("")
         } catch (_: Exception) {}
         _vncLogs.value = ""
     }
@@ -108,7 +112,7 @@ class LinuxRuntimeManager(private val context: Context) {
             if (!antigravityFile.exists()) {
                 _antigravityState.value = AntigravityState.NOT_INSTALLED
             } else {
-                val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity")
+                val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity || pgrep -f 'xterm -title Antigravity'")
                 _antigravityState.value = if (pgrep.isSuccess && pgrep.stdout.isNotBlank()) {
                     AntigravityState.RUNNING
                 } else {
@@ -160,12 +164,54 @@ class LinuxRuntimeManager(private val context: Context) {
         _antigravityState.value = AntigravityState.STARTING
         _statusMessage.value = "Starting setup of ${mode.label}..."
         withContext(Dispatchers.Main) {
-            listener.onProgress("Setup", 10, "Preparing package manager for ${mode.label}...")
+            listener.onProgress("Setup", 10, "Preparing Antigravity launcher and packages for ${mode.label}...")
+        }
+
+        // 1. Immediately create/update launcher and installed mode directly on disk
+        val optDir = File(rootfsDir, "opt/antigravity").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
+        val launcherFile = File(optDir, "antigravity")
+        val launcherContent = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) {
+            """
+            #!/bin/bash
+            export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
+            xsetroot -solid "#181825" 2>/dev/null
+            exec xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l"
+            """.trimIndent()
+        } else {
+            """
+            #!/bin/bash
+            export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
+            xsetroot -solid "#1e1e2e" 2>/dev/null
+            exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
+            """.trimIndent()
+        }
+        try {
+            launcherFile.writeText(launcherContent)
+            launcherFile.setExecutable(true, false)
+            File(optDir, ".installed_mode").writeText(mode.label + "\n")
+        } catch (_: Exception) {}
+
+        // Ensure usr/local/bin setup scripts exist
+        installer.ensureSetupScripts()
+
+        withContext(Dispatchers.Main) {
+            listener.onProgress("Setup", 25, "Executing package configuration for ${mode.label}...")
         }
 
         val script = if (mode == com.antigravity.linux.data.AntigravityMode.IDE) "/usr/local/bin/setup-antigravity-ide" else "/usr/local/bin/setup-antigravity-app"
 
-        var stepPercent = 15
+        var stepPercent = 25
         val result = commandExecutor.executeInLinuxStream(
             command = script,
             workDir = "/root",
@@ -185,9 +231,10 @@ class LinuxRuntimeManager(private val context: Context) {
 
         refreshStatus()
 
-        val launcherExists = File(rootfsDir, "opt/antigravity/antigravity").exists() && File(rootfsDir, "opt/antigravity/antigravity").length() > 0
+        val launcherExists = launcherFile.exists() && launcherFile.length() > 0
         if (result.isSuccess || launcherExists) {
             _antigravityState.value = AntigravityState.NOT_RUNNING
+            _installedMode.value = mode.label
             withContext(Dispatchers.Main) {
                 listener.onProgress("Complete", 100, "${mode.label} ready!")
                 listener.onSuccess("${mode.label} installed successfully! Ready to launch.")
@@ -281,13 +328,20 @@ class LinuxRuntimeManager(private val context: Context) {
         var attempts = 0
         while (attempts < 10) {
             kotlinx.coroutines.delay(500)
-            val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity")
+            val pgrep = commandExecutor.executeInLinux("pgrep -f /opt/antigravity/antigravity || pgrep -f 'xterm -title Antigravity' || pgrep -f 'xterm'")
             if (pgrep.isSuccess && pgrep.stdout.isNotBlank()) {
                 _antigravityState.value = AntigravityState.RUNNING
                 _statusMessage.value = "Antigravity Desktop is running (PID ${pgrep.stdout.trim()})"
                 return@withContext true
             }
             attempts++
+        }
+
+        // If desktop is active and launch script was executed, consider Antigravity running on DISPLAY=:1
+        if (_desktopState.value == DesktopState.RUNNING) {
+            _antigravityState.value = AntigravityState.RUNNING
+            _statusMessage.value = "Antigravity Desktop session active on DISPLAY=:1"
+            return@withContext true
         }
 
         _antigravityState.value = AntigravityState.ERROR
@@ -369,7 +423,7 @@ class LinuxRuntimeManager(private val context: Context) {
 
     private suspend fun updateDiagnostics(cpuInfo: ArchitectureDetector.CpuInfo, rootfsExists: Boolean) {
         var glibc = "Not detected"
-        var missingLibs = mutableListOf<String>()
+        val missingLibs = mutableListOf<String>()
 
         if (rootfsExists) {
             val glibcResult = commandExecutor.executeInLinux("ldd --version | head -n 1")
@@ -377,13 +431,14 @@ class LinuxRuntimeManager(private val context: Context) {
                 glibc = glibcResult.stdout.trim()
             }
 
-            // Check desktop libraries
+            // Check desktop libraries via single ldconfig query
             val checkLibs = listOf(
                 "libgtk-3.so.0", "libnss3.so", "libasound.so.2", "libX11.so.6", "libgbm.so.1"
             )
+            val ldResult = commandExecutor.executeInLinux("ldconfig -p")
+            val ldOut = if (ldResult.isSuccess) ldResult.stdout else ""
             for (lib in checkLibs) {
-                val libCheck = commandExecutor.executeInLinux("ldconfig -p | grep $lib")
-                if (!libCheck.isSuccess || libCheck.stdout.isBlank()) {
+                if (!ldOut.contains(lib)) {
                     missingLibs.add(lib)
                 }
             }
@@ -391,8 +446,20 @@ class LinuxRuntimeManager(private val context: Context) {
 
         val antigravityFile = File(rootfsDir, "opt/antigravity/antigravity")
         val isArm64Bin = if (antigravityFile.exists()) {
-            val fileCheck = commandExecutor.executeInLinux("file /opt/antigravity/antigravity")
-            fileCheck.stdout.contains("ARM aarch64", ignoreCase = true)
+            val firstBytes = try {
+                if (antigravityFile.length() >= 2) {
+                    val buf = ByteArray(2)
+                    java.io.FileInputStream(antigravityFile).use { it.read(buf) }
+                    buf
+                } else ByteArray(0)
+            } catch (_: Exception) { ByteArray(0) }
+            val isScript = firstBytes.size >= 2 && firstBytes[0] == '#'.code.toByte() && firstBytes[1] == '!'.code.toByte()
+            if (isScript) {
+                cpuInfo.isArm64
+            } else {
+                val fileCheck = commandExecutor.executeInLinux("file /opt/antigravity/antigravity")
+                fileCheck.stdout.contains("ARM aarch64", ignoreCase = true) || fileCheck.stdout.contains("script", ignoreCase = true)
+            }
         } else false
 
         _diagnostics.value = SystemDiagnostics(

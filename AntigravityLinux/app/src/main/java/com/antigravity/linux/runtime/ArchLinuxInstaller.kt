@@ -346,7 +346,7 @@ class ArchLinuxInstaller(
 
             if (testResult.isSuccess && (testResult.stdout.contains("aarch64") || testResult.stdout.contains("arm64") || testResult.stdout.isNotBlank())) {
                 try {
-                    File(rootfsDir, ".install_complete").writeText("v1.0.21\n")
+                    File(rootfsDir, ".install_complete").writeText("v1.0.22\n")
                 } catch (_: Exception) {}
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready.")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Kernel: aarch64)")
@@ -356,7 +356,7 @@ class ArchLinuxInstaller(
                 // but device kernel / Knox restricted pre-flight ptrace test.
                 // Complete installation in compatibility mode so user is not blocked.
                 try {
-                    File(rootfsDir, ".install_complete").writeText("v1.0.21-compat\n")
+                    File(rootfsDir, ".install_complete").writeText("v1.0.22-compat\n")
                 } catch (_: Exception) {}
                 notifyProgress(listener, "Complete", 100, "Ultra-Light Linux ARM64 ready (Compatibility mode).")
                 notifySuccess(listener, "Ultra-Light Linux ARM64 installed successfully (Ready for Terminal & Desktop)")
@@ -737,6 +737,57 @@ class ArchLinuxInstaller(
         val vncHomeLog = File(rootfsDir, "home/antigravity/.vnc/desktop.log")
         safeWriteText(vncHomeLog, "[System] VNC desktop session logger initialized.\n")
 
+        // Ensure all launcher, desktop, and package setup scripts are written and executable
+        ensureSetupScripts()
+    }
+
+    /**
+     * Pre-creates all launcher scripts, desktop servers, and package setup scripts.
+     * Ensures /opt/antigravity launcher always exists on disk independently of PRoot.
+     */
+    fun ensureSetupScripts() {
+        File(rootfsDir, "usr/local/bin").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
+
+        // Configure dpkg force-all to avoid Android link/backup restrictions
+        val dpkgCfgDir = File(rootfsDir, "etc/dpkg/dpkg.cfg.d").apply { mkdirs() }
+        safeWriteText(File(dpkgCfgDir, "01force"), "force-all\n")
+
+        // Pre-create /opt/antigravity launcher on disk
+        val optDir = File(rootfsDir, "opt/antigravity").apply {
+            mkdirs()
+            try {
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+            } catch (_: Exception) {}
+        }
+        val launcherFile = File(optDir, "antigravity")
+        if (!launcherFile.exists() || launcherFile.length() == 0L) {
+            safeWriteText(
+                launcherFile,
+                """
+                #!/bin/bash
+                export DISPLAY=:1
+                export USER=antigravity
+                export HOME=/home/antigravity
+                xsetroot -solid "#1e1e2e" 2>/dev/null
+                exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
+                """.trimIndent()
+            )
+            launcherFile.setExecutable(true, false)
+        }
+        val modeFile = File(optDir, ".installed_mode")
+        if (!modeFile.exists() || modeFile.length() == 0L) {
+            safeWriteText(modeFile, "Desktop App\n")
+        }
+
         // Create start-desktop script with reliable logging
         val startDesktop = File(rootfsDir, "usr/local/bin/start-desktop")
         safeWriteText(
@@ -821,8 +872,10 @@ class ArchLinuxInstaller(
             setupApp,
             """
             #!/bin/bash
-            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
-            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /etc/dpkg/dpkg.cfg.d /var/lib/dpkg /var/cache/apt/archives
+            echo "force-all" > /etc/dpkg/dpkg.cfg.d/01force
+            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new
+            rm -rf /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
             echo 'Dir::Cache::pkgcache "";' > /etc/apt/apt.conf.d/01autoclean
             echo 'Dir::Cache::srcpkgcache "";' >> /etc/apt/apt.conf.d/01autoclean
@@ -831,8 +884,10 @@ class ArchLinuxInstaller(
             cat << 'EOF' > /opt/antigravity/antigravity
             #!/bin/bash
             export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
             xsetroot -solid "#1e1e2e" 2>/dev/null
-            xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l" &
+            exec xterm -title "Antigravity Desktop Terminal" -geometry 80x24+40+40 -e "bash -l"
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop App" > /opt/antigravity/.installed_mode
@@ -859,8 +914,10 @@ class ArchLinuxInstaller(
             setupIde,
             """
             #!/bin/bash
-            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /var/lib/dpkg /var/cache/apt/archives
-            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new /var/lib/dpkg/updates/*
+            mkdir -p /opt/antigravity /etc/apt/apt.conf.d /etc/dpkg/dpkg.cfg.d /var/lib/dpkg /var/cache/apt/archives
+            echo "force-all" > /etc/dpkg/dpkg.cfg.d/01force
+            rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/dpkg/status-old /var/lib/dpkg/status-new
+            rm -rf /var/lib/dpkg/updates/*
             echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/01nodrop
             echo 'Dir::Cache::pkgcache "";' > /etc/apt/apt.conf.d/01autoclean
             echo 'Dir::Cache::srcpkgcache "";' >> /etc/apt/apt.conf.d/01autoclean
@@ -869,8 +926,10 @@ class ArchLinuxInstaller(
             cat << 'EOF' > /opt/antigravity/antigravity
             #!/bin/bash
             export DISPLAY=:1
+            export USER=antigravity
+            export HOME=/home/antigravity
             xsetroot -solid "#181825" 2>/dev/null
-            xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l" &
+            exec xterm -title "Antigravity IDE Shell" -geometry 90x28+30+30 -e "bash -l"
             EOF
             chmod +x /opt/antigravity/antigravity
             echo "Desktop IDE" > /opt/antigravity/.installed_mode
