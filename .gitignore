@@ -27,3 +27,5 @@ attachments/
 *.apk
 build9_check/
 test_rootfs/
+simulated_android/
+__pycache__/
