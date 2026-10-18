@@ -233,20 +233,20 @@ def test_6_proot_execution_under_oneui():
     if os.path.exists(loader_bin):
         os.chmod(loader_bin, 0o755)
 
-    proot_env = {
+    # Base PRoot environment with PROOT_TMP_DIR for host and guest TMPDIR=/tmp
+    proot_env_base = {
         "PROOT_TMP_DIR": TMP_DIR,
-        "TMPDIR": TMP_DIR,
+        "TMPDIR": "/tmp",
         "PROOT_IGNORE_MISSING_BINDINGS": "1",
         "PROOT_DONT_POLLUTE_ROOTFS": "1",
         "PROOT_NO_SECCOMP": "1",
+        "PROOT_VERBOSE": "1",
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "HOME": "/root",
         "USER": "root",
         "SHELL": "/bin/bash",
         "LANG": "C.UTF-8"
     }
-    if os.path.exists(loader_bin):
-        proot_env["PROOT_LOADER"] = loader_bin
 
     test_commands = [
         (["/usr/bin/uname", "-m"], "Kernel architecture identification (uname -m)"),
@@ -255,25 +255,62 @@ def test_6_proot_execution_under_oneui():
         (["/bin/sh", "-c", "echo ONEUI_SH_EXEC_SUCCESS"], "Standard /bin/sh execution")
     ]
 
+    # Test under Profile 0 (Standalone direct PRoot without external loader - safest on Samsung One UI)
+    log_success("Testing Profile 0: Standalone direct PRoot (useLoader=false, noSeccomp=true)")
     for cmd_args, label in test_commands:
         full_cmd = [
             proot_bin,
+            "--kill-on-exit",
             "-r", ROOTFS_DIR,
             "-0",
             "--link2symlink",
             "-b", "/dev",
             "-b", "/proc",
+            "-b", f"{TMP_DIR}:/tmp",
             "-w", "/root"
         ] + cmd_args
 
-        res = run_as_android_app(full_cmd, env=proot_env)
+        res = run_as_android_app(full_cmd, env=proot_env_base)
         if res.returncode == 0:
             out = res.stdout.strip().replace("\n", " | ")
-            log_success(f"{label}: Passed (Output: {out})")
+            log_success(f"[Standalone] {label}: Passed (Output: {out})")
         else:
-            log_fail(f"{label}: FAILED with exit code {res.returncode}")
+            log_fail(f"[Standalone] {label}: FAILED with exit code {res.returncode}")
             log_fail(f"stderr: {res.stderr.strip()}")
             return False
+
+    # Also test Profile 2 (Fallback with external loader)
+    if os.path.exists(loader_bin):
+        log_success("Testing Profile 2: External loader fallback (useLoader=true, noSeccomp=true)")
+        proot_env_loader = dict(proot_env_base)
+        proot_env_loader["PROOT_LOADER"] = loader_bin
+        full_cmd = [
+            proot_bin,
+            "--kill-on-exit",
+            "-r", ROOTFS_DIR,
+            "-0",
+            "--link2symlink",
+            "-b", "/dev",
+            "-b", "/proc",
+            "-b", f"{TMP_DIR}:/tmp",
+            "-w", "/root",
+            "/usr/bin/uname", "-m"
+        ]
+        res = run_as_android_app(full_cmd, env=proot_env_loader)
+        if res.returncode == 0:
+            log_success(f"[Loader] uname -m passed with output: {res.stdout.strip()}")
+        else:
+            log_fail(f"[Loader] test failed with code {res.returncode}")
+
+    # Step 6b: Test Rootfs File Integrity Verification Check
+    has_bash = os.path.exists(os.path.join(ROOTFS_DIR, "usr/bin/bash")) and os.path.getsize(os.path.join(ROOTFS_DIR, "usr/bin/bash")) > 0
+    has_resolv = os.path.exists(os.path.join(ROOTFS_DIR, "etc/resolv.conf"))
+    has_ld = os.path.exists(os.path.join(ROOTFS_DIR, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1")) or os.path.exists(os.path.join(ROOTFS_DIR, "lib/ld-linux-aarch64.so.1"))
+    if has_bash and has_resolv and has_ld:
+        log_success("Rootfs filesystem integrity verification: PASS (bash, resolv.conf, ld-linux verified)")
+    else:
+        log_fail("Rootfs filesystem integrity verification: FAIL")
+        return False
 
     return True
 

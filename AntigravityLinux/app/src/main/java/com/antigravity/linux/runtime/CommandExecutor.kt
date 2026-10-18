@@ -32,47 +32,51 @@ class CommandExecutor(
         var cachedWorkingProfile: ProotProfile? = null
 
         val CANDIDATE_PROFILES = listOf(
-            // Profile 0: PROOT_NO_SECCOMP with loader (Required standard for Samsung / Android 14 ARM64)
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
-            // Profile 1: PROOT_NO_SECCOMP without loader (direct Alpine static PRoot - proven 100% on ARM64)
+            // Profile 0: PROOT_NO_SECCOMP without loader (Direct static execution - avoids Samsung ASLR collisions)
             ProotProfile(noSeccomp = true, useLoader = false, bindSys = false),
-            // Profile 2: PROOT_NO_SECCOMP with loader and sysfs bind
-            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
-            // Profile 3: PROOT_NO_SECCOMP without loader and sysfs bind
+            // Profile 1: PROOT_NO_SECCOMP without loader and with sysfs bind
             ProotProfile(noSeccomp = true, useLoader = false, bindSys = true),
-            // Profile 4: Native seccomp with loader, no sysfs bind (for kernels supporting seccomp trap)
-            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false),
-            // Profile 5: Native seccomp without loader (legacy fallback)
-            ProotProfile(noSeccomp = false, useLoader = false, bindSys = false)
+            // Profile 2: PROOT_NO_SECCOMP with loader (Fallback if loader injection is required)
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = false),
+            // Profile 3: PROOT_NO_SECCOMP with loader and sysfs bind
+            ProotProfile(noSeccomp = true, useLoader = true, bindSys = true),
+            // Profile 4: Native seccomp without loader (for kernels supporting unprivileged seccomp trap)
+            ProotProfile(noSeccomp = false, useLoader = false, bindSys = false),
+            // Profile 5: Native seccomp with loader (legacy fallback)
+            ProotProfile(noSeccomp = false, useLoader = true, bindSys = false)
         )
     }
 
     /**
-     * Resolves the executable PRoot binary.
-     * Prefers nativeLibraryDir/libproot.so (unrestricted execution permissions on Android 10+),
-     * then filesDir/bin/proot or prootBin.
+     * Resolves candidate executable PRoot binaries.
+     * Checks nativeLibraryDir/libproot.so (unrestricted execution permissions on Android 10+),
+     * and filesDir/bin/proot or prootBin.
      */
-    fun getEffectiveProot(): File {
+    fun getCandidateProots(): List<File> {
+        val list = mutableListOf<File>()
         if (context != null) {
             val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
             if (nativeLib.exists() && nativeLib.length() > 0) {
                 try { nativeLib.setExecutable(true, false) } catch (_: Exception) {}
-                return nativeLib
+                list.add(nativeLib)
             }
-        }
-        if (prootBin.exists() && prootBin.length() > 0) {
-            try { prootBin.setExecutable(true, false) } catch (_: Exception) {}
-            return prootBin
-        }
-        if (context != null) {
             val binProot = File(context.filesDir, "bin/proot")
-            if (binProot.exists() && binProot.length() > 0) {
+            if (binProot.exists() && binProot.length() > 0 && !list.contains(binProot)) {
                 try { binProot.setExecutable(true, false) } catch (_: Exception) {}
-                return binProot
+                list.add(binProot)
             }
         }
-        return prootBin
+        if (prootBin.exists() && prootBin.length() > 0 && !list.contains(prootBin)) {
+            try { prootBin.setExecutable(true, false) } catch (_: Exception) {}
+            list.add(prootBin)
+        }
+        return if (list.isNotEmpty()) list else listOf(prootBin)
     }
+
+    /**
+     * Resolves the primary executable PRoot binary.
+     */
+    fun getEffectiveProot(): File = getCandidateProots().first()
 
     /**
      * Resolves the executable PRoot loader.
@@ -171,9 +175,20 @@ class CommandExecutor(
         profile: ProotProfile,
         workDir: String = "/root",
         vararg extraArgs: String
+    ): List<String> = buildProotCommandForProfileWithBinary(
+        prootBinary = getEffectiveProot(),
+        profile = profile,
+        workDir = workDir,
+        extraArgs = extraArgs
+    )
+
+    fun buildProotCommandForProfileWithBinary(
+        prootBinary: File,
+        profile: ProotProfile,
+        workDir: String = "/root",
+        vararg extraArgs: String
     ): List<String> {
-        val effectiveProot = getEffectiveProot()
-        val prootPath = effectiveProot.absolutePath
+        val prootPath = prootBinary.absolutePath
         val rootfsPath = rootfsDir.absolutePath
 
         // If target workDir is /root but /root directory does not exist, safely fallback to /
@@ -181,6 +196,7 @@ class CommandExecutor(
 
         val cmdList = mutableListOf<String>()
         cmdList.add(prootPath)
+        cmdList.add("--kill-on-exit")
         cmdList.add("-r")
         cmdList.add(rootfsPath)
         cmdList.add("-0")
@@ -193,6 +209,9 @@ class CommandExecutor(
             cmdList.add("-b")
             cmdList.add("/sys")
         }
+        val tmpDir = getProotTmpDir()
+        cmdList.add("-b")
+        cmdList.add("${tmpDir.absolutePath}:/tmp")
         cmdList.add("-w")
         cmdList.add(effectiveWorkDir)
         cmdList.addAll(extraArgs)
@@ -221,9 +240,10 @@ class CommandExecutor(
     ) {
         val tmpDir = getProotTmpDir()
         env["PROOT_TMP_DIR"] = tmpDir.absolutePath
-        env["TMPDIR"] = tmpDir.absolutePath
+        env["TMPDIR"] = "/tmp"
         env["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
         env["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
+        env["PROOT_VERBOSE"] = "1"
 
         if (profile.noSeccomp) {
             env["PROOT_NO_SECCOMP"] = "1"
@@ -243,11 +263,15 @@ class CommandExecutor(
         }
 
         // Strip Android Bionic host library paths and Android runtime variables to avoid GNU libc SIGSEGV
-        env.remove("LD_LIBRARY_PATH")
-        env.remove("LD_PRELOAD")
-        env.remove("BOOTCLASSPATH")
-        env.remove("DEX2OATBOOTCLASSPATH")
-        env.remove("SYSTEMSERVERCLASSPATH")
+        val varsToRemove = listOf(
+            "LD_LIBRARY_PATH", "LD_PRELOAD",
+            "BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH", "SYSTEMSERVERCLASSPATH",
+            "ANDROID_DATA", "ANDROID_ROOT", "ANDROID_STORAGE",
+            "ANDROID_ART_ROOT", "ANDROID_I18N_ROOT", "ANDROID_TZDATA_ROOT"
+        )
+        for (v in varsToRemove) {
+            env.remove(v)
+        }
 
         env["HOME"] = if (asUser == "root") "/root" else "/home/$asUser"
         env["USER"] = asUser
@@ -304,9 +328,9 @@ class CommandExecutor(
         val shellPath = resolveShellPath()
         val hostWorkDir = if (rootfsDir.exists()) rootfsDir else (context?.filesDir ?: rootfsDir)
 
-        // Helper function to execute under a specific profile and shell
-        fun runAttempt(profile: ProotProfile, shell: String): ExecutionResult {
-            val cmdList = buildProotCommandForProfile(profile, workDir, shell, "-c", command)
+        // Helper function to execute under a specific binary, profile and shell
+        fun runAttempt(prootBin: File, profile: ProotProfile, shell: String): ExecutionResult {
+            val cmdList = buildProotCommandForProfileWithBinary(prootBin, profile, workDir, shell, "-c", command)
             val processBuilder = ProcessBuilder(cmdList)
             if (hostWorkDir.exists()) {
                 processBuilder.directory(hostWorkDir)
@@ -371,33 +395,39 @@ class CommandExecutor(
             }
         }
 
+        val prootCandidates = getCandidateProots()
+
         // 1. If we already found a working profile, use it directly (prevents repeating long commands)
         val cached = cachedWorkingProfile
         if (cached != null) {
-            val result = runAttempt(cached, shellPath)
-            if (!result.isSuccess && shellPath != "/bin/sh") {
-                val shResult = runAttempt(cached, "/bin/sh")
-                if (shResult.isSuccess) return@withContext shResult
-            }
-            return@withContext result
-        }
-
-        // 2. Discover working profile across candidate profiles
-        var lastResult: ExecutionResult? = null
-        for (candidate in CANDIDATE_PROFILES) {
-            val result = runAttempt(candidate, shellPath)
-            if (result.isSuccess) {
-                cachedWorkingProfile = candidate
-                return@withContext result
-            }
-            if (shellPath != "/bin/sh") {
-                val shResult = runAttempt(candidate, "/bin/sh")
-                if (shResult.isSuccess) {
-                    cachedWorkingProfile = candidate
-                    return@withContext shResult
+            for (pBin in prootCandidates) {
+                val result = runAttempt(pBin, cached, shellPath)
+                if (result.isSuccess) return@withContext result
+                if (shellPath != "/bin/sh") {
+                    val shResult = runAttempt(pBin, cached, "/bin/sh")
+                    if (shResult.isSuccess) return@withContext shResult
                 }
             }
-            lastResult = result
+        }
+
+        // 2. Discover working profile across candidate binaries and profiles
+        var lastResult: ExecutionResult? = null
+        for (pBin in prootCandidates) {
+            for (candidate in CANDIDATE_PROFILES) {
+                val result = runAttempt(pBin, candidate, shellPath)
+                if (result.isSuccess) {
+                    cachedWorkingProfile = candidate
+                    return@withContext result
+                }
+                if (shellPath != "/bin/sh") {
+                    val shResult = runAttempt(pBin, candidate, "/bin/sh")
+                    if (shResult.isSuccess) {
+                        cachedWorkingProfile = candidate
+                        return@withContext shResult
+                    }
+                }
+                lastResult = result
+            }
         }
 
         return@withContext lastResult ?: ExecutionResult(
@@ -417,20 +447,22 @@ class CommandExecutor(
         asUser: String = "root",
         timeoutSeconds: Long = 30
     ): ExecutionResult = withContext(Dispatchers.IO) {
-        val effectiveProot = getEffectiveProot()
-        if (!effectiveProot.exists() || effectiveProot.length() == 0L) {
+        val prootCandidates = getCandidateProots()
+        if (prootCandidates.isEmpty()) {
             return@withContext ExecutionResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "PRoot engine binary not found."
             )
         }
-        try { effectiveProot.setExecutable(true, false) } catch (_: Exception) {}
+        for (b in prootCandidates) {
+            try { b.setExecutable(true, false) } catch (_: Exception) {}
+        }
 
         val hostWorkDir = if (rootfsDir.exists()) rootfsDir else (context?.filesDir ?: rootfsDir)
 
-        fun runDirectAttempt(profile: ProotProfile): ExecutionResult {
-            val cmdList = buildProotCommandForProfile(profile, workDir, *commandArgs.toTypedArray())
+        fun runDirectAttempt(prootBin: File, profile: ProotProfile): ExecutionResult {
+            val cmdList = buildProotCommandForProfileWithBinary(prootBin, profile, workDir, *commandArgs.toTypedArray())
             val processBuilder = ProcessBuilder(cmdList)
             if (hostWorkDir.exists()) {
                 processBuilder.directory(hostWorkDir)
@@ -482,18 +514,22 @@ class CommandExecutor(
 
         val cached = cachedWorkingProfile
         if (cached != null) {
-            val res = runDirectAttempt(cached)
-            if (res.isSuccess) return@withContext res
+            for (pBin in prootCandidates) {
+                val res = runDirectAttempt(pBin, cached)
+                if (res.isSuccess) return@withContext res
+            }
         }
 
         var lastResult: ExecutionResult? = null
-        for (candidate in CANDIDATE_PROFILES) {
-            val res = runDirectAttempt(candidate)
-            if (res.isSuccess) {
-                cachedWorkingProfile = candidate
-                return@withContext res
+        for (pBin in prootCandidates) {
+            for (candidate in CANDIDATE_PROFILES) {
+                val res = runDirectAttempt(pBin, candidate)
+                if (res.isSuccess) {
+                    cachedWorkingProfile = candidate
+                    return@withContext res
+                }
+                lastResult = res
             }
-            lastResult = res
         }
         return@withContext lastResult ?: ExecutionResult(255, "", "Direct execution failed across all profiles.")
     }
